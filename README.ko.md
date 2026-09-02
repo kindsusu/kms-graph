@@ -1,4 +1,4 @@
-<p align="center"><img src="assets/kms-graph-hero.svg" alt="KMS Graph" width="100%"></p>
+<p align="center"><img src="assets/kms-graph-hero-v2.svg" alt="KMS Graph — 업무 도메인별로 연결되고 확장되는 지식 그래프" width="100%"></p>
 
 # KMS Graph
 

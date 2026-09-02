@@ -1,4 +1,4 @@
-<p align="center"><img src="assets/kms-graph-hero.svg" alt="KMS Graph" width="100%"></p>
+<p align="center"><img src="assets/kms-graph-hero-v2.svg" alt="KMS Graph — connected knowledge organized by business domain" width="100%"></p>
 
 # KMS Graph
 
