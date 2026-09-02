@@ -1,4 +1,4 @@
-<p align="center"><img src="assets/hero.svg" alt="KMS Graph" width="100%"></p>
+<p align="center"><img src="assets/hero-constellation.svg" alt="KMS Graph" width="100%"></p>
 
 # KMS Graph
 
