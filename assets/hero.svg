@@ -68,22 +68,8 @@
     <text x="846" y="82">경영</text>
   </g>
 
-  <g transform="translate(930,64)">
-    <rect width="220" height="272" rx="14" fill="#FFFFFF" fill-opacity="0.06" stroke="#FFFFFF" stroke-opacity="0.14"/>
-    <text class="t" x="18" y="30" font-size="12" fill="#94A3B8" letter-spacing="2">CATALOG</text>
-    <line x1="18" y1="42" x2="202" y2="42" stroke="#FFFFFF" stroke-opacity="0.12"/>
-    <g class="t cat">
-      <circle cx="26" cy="66" r="4" fill="#818CF8"/><text x="40" y="70">연차 잔여일 계산기</text>
-      <circle cx="26" cy="100" r="4" fill="#818CF8"/><text x="40" y="104">온보딩 체크리스트</text>
-      <circle cx="26" cy="134" r="4" fill="#FB7185"/><text x="40" y="138">면접 질문 생성기</text>
-      <circle cx="26" cy="168" r="4" fill="#FBBF24"/><text x="40" y="172">견적 계산기</text>
-      <circle cx="26" cy="202" r="4" fill="#2DD4BF"/><text x="40" y="206">비품 반납 점검표</text>
-      <circle cx="26" cy="236" r="4" fill="#38BDF8"/><text x="40" y="240">회의록 요약기</text>
-    </g>
-  </g>
 
   <g class="t">
-    <text x="64" y="330" font-size="40" font-weight="800" fill="#F8FAFC" letter-spacing="-1">KMS Graph</text>
-    <text x="66" y="360" font-size="16" fill="#CBD5E1">직원이 만든 웹앱을 그래프와 목록으로 한 장에</text>
+    <text x="64" y="346" font-size="40" font-weight="800" fill="#F8FAFC" letter-spacing="-1">KMS Graph</text>
   </g>
 </svg>
