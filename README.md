@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/hero.svg" alt="kms-graph: 그래프와 목록으로 보는 사내 지식 지도" width="100%"></p>
+
 # kms-graph 설치 안내
 
 직원이 만든 사내 웹앱을 구글 시트나 노션 데이터베이스에 등록하면, 하루 한 번 그래프 + 목록 페이지를
