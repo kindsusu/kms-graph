@@ -1,8 +1,8 @@
-<p align="center"><img src="assets/kms-graph-hero-v2.svg" alt="KMS Graph — connected knowledge organized by business domain" width="100%"></p>
+<p align="center"><img src="assets/kms-graph-hero-v2.svg" alt="KMS Graph, connected knowledge organized by business domain" width="100%"></p>
 
 # KMS Graph
 
-English · [한국어](README.ko.md)
+English · [Korean](README.ko.md)
 
 A Claude Code skill that turns the web apps your employees build into a single static page with a **graph view and a list view**.
 Employees register their apps in a Google Sheet or a Notion database. Once an admin approves an entry, the page is rebuilt daily, pushed to GitHub Pages, and a summary is posted to a Teams channel.
@@ -49,13 +49,13 @@ Type `/kms-graph` in Claude Code. On the first run it asks which source you use 
 
 ### Google Sheets
 
-One spreadsheet with three tabs. Tab names and the header row must match exactly. You can paste the CSV files in `sample/` to start.
+One spreadsheet with three tabs. Tab names and the header row must match exactly (Korean names are accepted as well; the files in `sample/` use them).
 
-- `사이트` tab: 사이트명 · URL · 소개 · 도메인 · 참조데이터 · 작성자 · 도구 · 프롬프트 · 등록일 · 승인 · 비고
-- `도메인` tab: 도메인명 · 설명 · 색상
-- `참조데이터` tab: 데이터명 · 종류 · 담당팀 · 설명
+- `sites` tab: name · url · description · domain · data_sources · author · tool · prompt · date · approved · note
+- `domains` tab: name · description · color
+- `data_sources` tab: name · kind · team · description
 
-Make `승인` (approved) a checkbox and give `도메인` a data-validation dropdown pointing at the `도메인` tab. Separate multiple `참조데이터` values with commas. Link a Google Form to the `사이트` tab so employees can submit through the form.
+Make `approved` a checkbox and give `domain` a data-validation dropdown pointing at the `domains` tab. Separate multiple `data_sources` values with commas. Link a Google Form to the `sites` tab so employees can submit through the form.
 
 Read access goes through a service account. Enable the Sheets API in Google Cloud, create a service-account key (JSON), and share the spreadsheet with the service-account email as a viewer. Put the key path in `service_account_json`.
 
@@ -65,13 +65,13 @@ Set `source` to `notion` in `config.json` and prepare one database for sites. Pr
 
 | Property | Type |
 |---|---|
-| 사이트명 | Title |
-| URL | URL |
-| 도메인 | Select (its options become the domain master list) |
-| 참조데이터 | Multi-select (its options become the data-source master list) |
-| 승인 | Checkbox |
-| 소개 · 작성자 · 도구 · 프롬프트 · 비고 | Text |
-| 등록일 | Date |
+| name | Title |
+| url | URL |
+| domain | Select (its options become the domain master list) |
+| data_sources | Multi-select (its options become the data-source master list) |
+| approved | Checkbox |
+| description · author · tool · prompt · note | Text |
+| date | Date |
 
 Create a read-only integration at notion.so/my-integrations, put its token in `notion_token`, and connect the integration to the database from the database's connection menu. The database ID is the 32-character value in the URL; put it in `notion_db_sites`. To manage the type, owning team, and description of each data source, create a second database and set `notion_db_data`.
 

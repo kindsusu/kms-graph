@@ -175,4 +175,17 @@ ex = build.load_mappings(os.path.join(SAMPLE, "mappings.example.json"))
 assert set(ex) == {"도메인", "참조데이터", "사이트도메인"}, ex
 assert ex["참조데이터"]["비품 사진 폴더"]["new"]["데이터명"], ex
 
+# 영문 탭·헤더 이름
+en = tempfile.mkdtemp(prefix="kms-en-")
+NL = chr(10)
+open(os.path.join(en, "sites.csv"), "w", encoding="utf-8").write(
+    "name,url,description,domain,data_sources,author,tool,prompt,date,approved,note" + NL
+    + "Leave Calc,https://apps.example.com/leave,calc,HR,HR export,A,Claude,p,2026-01-01,TRUE," + NL)
+open(os.path.join(en, "domains.csv"), "w", encoding="utf-8").write("name,description,color" + NL + "HR,people ops,#4F86C6" + NL)
+open(os.path.join(en, "data_sources.csv"), "w", encoding="utf-8").write("name,kind,team,description" + NL + "HR export,excel,HR,monthly" + NL)
+en_rows = build.read_csv_dir(en)
+assert en_rows["sites"][0]["사이트명"] == "Leave Calc" and en_rows["sites"][0]["승인"] == "TRUE", en_rows["sites"]
+assert en_rows["domains"][0]["도메인명"] == "HR" and en_rows["data"][0]["데이터명"] == "HR export", en_rows
+shutil.rmtree(en, ignore_errors=True)
+
 print("테스트 통과")

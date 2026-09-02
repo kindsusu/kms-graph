@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="420" viewBox="0 0 1200 420" role="img" aria-labelledby="title desc">
   <title id="title">KMS Graph</title>
-  <desc id="desc">GitHub 스타일로 재해석한 도메인 중심 지식 그래프</desc>
+  <desc id="desc">Domain-centered knowledge graph in a GitHub-style dark theme</desc>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#0D1117"/><stop offset="1" stop-color="#101722"/>

@@ -22,6 +22,23 @@ import requests
 HERE = os.path.dirname(os.path.abspath(__file__))
 TABS = {"sites": "사이트", "domains": "도메인", "data": "참조데이터"}
 SITE_HEADERS = ["사이트명", "URL", "소개", "도메인", "참조데이터", "작성자", "도구", "프롬프트", "등록일", "승인", "비고"]
+# 영문 탭·헤더·속성 이름도 받는다. 내부에서는 한국어 이름으로 통일한다.
+EN_TABS = {"sites": "sites", "domains": "domains", "data": "data_sources"}
+EN_HEADERS = {
+    "sites": {"name": "사이트명", "url": "URL", "description": "소개", "domain": "도메인", "data_sources": "참조데이터",
+              "author": "작성자", "tool": "도구", "prompt": "프롬프트", "date": "등록일", "approved": "승인", "note": "비고"},
+    "domains": {"name": "도메인명", "description": "설명", "color": "색상"},
+    "data": {"name": "데이터명", "kind": "종류", "team": "담당팀", "description": "설명"},
+}
+
+
+def canon(key, header):
+    h = str(header).strip()
+    return EN_HEADERS[key].get(h.lower().replace(" ", "_"), h)
+
+
+def canon_rows(key, rows):
+    return [{canon(key, h): v for h, v in r.items()} for r in rows]
 TRUE_VALUES = {"true", "예", "y", "yes", "o", "1", "✓", "v", "체크"}
 PALETTE = ["#4F86C6", "#E2703A", "#5BA87A", "#B06AB3", "#D9A441", "#7A8B99", "#C25A7C"]
 SPLIT_RE = re.compile(r"[,;\n]")
@@ -38,9 +55,11 @@ def read_csv_dir(csv_dir):
     for key, tab in TABS.items():
         path = os.path.join(csv_dir, tab + ".csv")
         if not os.path.exists(path):
-            raise SystemExit("CSV 파일이 없습니다: %s" % path)
+            path = os.path.join(csv_dir, EN_TABS[key] + ".csv")
+        if not os.path.exists(path):
+            raise SystemExit("CSV 파일이 없습니다: %s (또는 %s.csv)" % (path, tab))
         with open(path, encoding="utf-8-sig", newline="") as f:
-            out[key] = [dict(r) for r in csv.DictReader(f)]
+            out[key] = canon_rows(key, [dict(r) for r in csv.DictReader(f)])
     return out
 
 
@@ -57,15 +76,19 @@ def read_sheets(cfg):
     sess = AuthorizedSession(creds)
     out = {}
     for key, tab in TABS.items():
-        url = "https://sheets.googleapis.com/v4/spreadsheets/%s/values/%s" % (
-            urllib.parse.quote(sheet_id), urllib.parse.quote(tab))
-        r = sess.get(url, timeout=30)
+        r = None
+        for name in (tab, EN_TABS[key]):          # 한국어 탭이 없으면 영문 탭 이름으로
+            url = "https://sheets.googleapis.com/v4/spreadsheets/%s/values/%s" % (
+                urllib.parse.quote(sheet_id), urllib.parse.quote(name))
+            r = sess.get(url, timeout=30)
+            if r.status_code == 200:
+                break
         if r.status_code != 200:
             raise SystemExit("시트를 읽지 못했습니다 (%s 탭, HTTP %s): %s" % (tab, r.status_code, r.text[:300]))
         values = r.json().get("values", [])
         if not values:
             raise SystemExit("시트 %s 탭이 비어 있습니다." % tab)
-        header = [str(h).strip() for h in values[0]]
+        header = [canon(key, h) for h in values[0]]
         rows = []
         for raw in values[1:]:
             raw = list(raw) + [""] * (len(header) - len(raw))
@@ -130,12 +153,15 @@ def read_notion(cfg):
     if not token or not db_sites:
         raise SystemExit("config.json 에 notion_token / notion_db_sites 가 필요합니다.")
     schema = notion_call(token, "GET", "/databases/%s" % urllib.parse.quote(db_sites)).get("properties", {})
+    schema = {canon("sites", k): v for k, v in schema.items()}
     missing = [k for k in ("사이트명", "URL", "승인") if k not in schema]
     if missing:
         raise SystemExit("노션 사이트 DB 에 다음 속성이 없습니다: %s" % ", ".join(missing))
 
-    sites = [{h: notion_text(p.get("properties", {}).get(h)) for h in SITE_HEADERS}
-             for p in notion_query(token, db_sites)]
+    sites = []
+    for p in notion_query(token, db_sites):
+        pr = {canon("sites", k): v for k, v in p.get("properties", {}).items()}
+        sites.append({h: notion_text(pr.get(h)) for h in SITE_HEADERS})
     domains = [{"도메인명": o.get("name", ""), "설명": "",
                 "색상": NOTION_COLORS.get(o.get("color", "default"), NOTION_COLORS["default"])}
                for o in notion_options(schema.get("도메인"))]
@@ -145,7 +171,7 @@ def read_notion(cfg):
     if cfg.get("notion_db_data"):
         detail = {}
         for p in notion_query(token, cfg["notion_db_data"]):
-            pr = p.get("properties", {})
+            pr = {canon("data", k): v for k, v in p.get("properties", {}).items()}
             nm = notion_text(pr.get("데이터명"))
             if nm:
                 detail[nm] = {"데이터명": nm, "종류": notion_text(pr.get("종류")),
