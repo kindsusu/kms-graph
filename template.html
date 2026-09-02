@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KMS</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#fff; --line:#e2e6ea; --text:#1f2933; --muted:#68727d;
+    --accent:#4F86C6; --bad:#c0392b;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:var(--bg); color:var(--text);
+    font-family:"Malgun Gothic","맑은 고딕","Apple SD Gothic Neo","Noto Sans KR",system-ui,-apple-system,Segoe UI,sans-serif;
+    font-size:14px; line-height:1.5; display:flex; flex-direction:column;
+  }
+  header{background:var(--card);border-bottom:1px solid var(--line);padding:12px 18px;display:flex;align-items:baseline;gap:14px;flex-wrap:wrap}
+  header h1{font-size:19px;margin:0}
+  header .meta{color:var(--muted);font-size:12px}
+  .toolbar{background:var(--card);border-bottom:1px solid var(--line);padding:10px 18px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .toolbar input[type=search]{padding:6px 10px;border:1px solid var(--line);border-radius:6px;min-width:220px;font:inherit}
+  .chips{display:flex;gap:6px;flex-wrap:wrap}
+  .chip{border:1px solid var(--line);background:#fff;border-radius:14px;padding:4px 11px;cursor:pointer;font:inherit;font-size:12px}
+  .chip.on{color:#fff;border-color:transparent}
+  label.tg{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);cursor:pointer}
+  .tabs{display:flex;gap:6px;margin-left:auto}
+  .tab{border:1px solid var(--line);background:#fff;border-radius:6px;padding:6px 14px;cursor:pointer;font:inherit}
+  .tab.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+  main{flex:1;position:relative;overflow:hidden}
+  .view{position:absolute;inset:0;display:none}
+  .view.on{display:flex}
+  #graph{flex:1;min-width:0;background:var(--card)}
+  #panel{width:340px;flex:none;background:var(--card);border-left:1px solid var(--line);overflow:auto;padding:16px;display:none}
+  #panel.on{display:block}
+  #panel h2{font-size:17px;margin:0 0 4px}
+  #panel .close{float:right;border:none;background:none;font-size:18px;cursor:pointer;color:var(--muted)}
+  #panel dl{margin:12px 0 0;display:grid;grid-template-columns:74px 1fr;gap:6px 10px}
+  #panel dt{color:var(--muted);font-size:12px}
+  #panel dd{margin:0;word-break:break-all}
+  #panel .open-btn{display:inline-block;margin:10px 0;background:var(--accent);color:#fff;text-decoration:none;padding:7px 16px;border-radius:6px;font-weight:600}
+  #panel ul{margin:6px 0 0;padding-left:18px}
+  #panel details{margin-top:14px;border-top:1px solid var(--line);padding-top:10px}
+  #panel details pre{white-space:pre-wrap;background:var(--bg);padding:8px;border-radius:6px;font-size:12px;max-height:260px;overflow:auto}
+  .ref{color:var(--accent);cursor:pointer;text-decoration:underline}
+  .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px;vertical-align:baseline}
+  .cb{display:inline-block;margin-left:6px;padding:0 6px;border:1px solid var(--line);border-radius:9px;
+      color:var(--muted);background:var(--bg);font-size:11px;font-weight:400;white-space:nowrap;vertical-align:middle}
+  .list-wrap{flex:1;overflow:auto;padding:16px}
+  table{border-collapse:collapse;width:100%;background:var(--card);border:1px solid var(--line)}
+  th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+  th{background:#eef1f4;cursor:pointer;white-space:nowrap;user-select:none;font-size:13px}
+  tbody tr{cursor:pointer}
+  tbody tr:hover{background:#f0f5fb}
+  td a{color:var(--accent)}
+  .bad{color:var(--bad);font-weight:600}
+  .empty{padding:30px;color:var(--muted);text-align:center}
+  @media (max-width:900px){
+    #panel{position:absolute;right:0;top:0;bottom:0;width:min(88%,340px);box-shadow:-3px 0 12px rgba(0,0,0,.15);z-index:5}
+    .toolbar input[type=search]{min-width:140px}
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="h-title">KMS</h1>
+  <span class="meta" id="h-meta"></span>
+</header>
+
+<div class="toolbar">
+  <input type="search" id="q" placeholder="사이트명, 소개, 작성자, 참조데이터 검색">
+  <div class="chips" id="chips"></div>
+  <label class="tg"><input type="checkbox" id="onlybad"> 접속 불가만</label>
+  <div class="tabs">
+    <button class="tab on" id="tab-list">목록</button>
+    <button class="tab" id="tab-graph">그래프</button>
+  </div>
+</div>
+
+<main>
+  <section class="view" id="view-graph">
+    <div id="graph"></div>
+    <aside id="panel"></aside>
+  </section>
+  <section class="view on" id="view-list">
+    <div class="list-wrap">
+      <table>
+        <thead><tr>
+          <th data-k="name">사이트명</th><th data-k="domain">도메인</th><th data-k="data">참조데이터</th>
+          <th data-k="author">작성자</th><th data-k="date">등록일</th><th data-k="status">상태</th>
+        </tr></thead>
+        <tbody id="tbody"></tbody>
+      </table>
+      <div class="empty" id="list-empty" style="display:none">조건에 맞는 사이트가 없습니다.</div>
+    </div>
+  </section>
+</main>
+
+<script id="kms-data" type="application/json">/*__KMS_DATA__*/</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/vis-network/9.1.2/dist/vis-network.min.js"></script>
+<script>
+(function(){
+  "use strict";
+  var DATA = JSON.parse(document.getElementById('kms-data').textContent);
+  var SITES = DATA.sites || [], DATAS = DATA.data || [], DOMS = DATA.domains || [];
+
+  function esc(s){
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+    });
+  }
+  function byName(list){ var m={}; list.forEach(function(x){ m[x.name]=x; }); return m; }
+  var domMap = byName(DOMS), dataMap = byName(DATAS), siteMap = byName(SITES);
+  function domColor(n){ return (domMap[n] && domMap[n].color) || '#7A8B99'; }
+
+  document.title = DATA.title || 'KMS';
+  document.getElementById('h-title').textContent = DATA.title || 'KMS';
+
+  // ---- 노드 / 엣지 ----
+  var nodes = [], edges = [], eid = 0;
+  SITES.forEach(function(s){
+    nodes.push({id:'s:'+s.name, label:s.name, shape:'dot', size:10+3*s.data.length,
+      color:{background:domColor(s.domain), border:domColor(s.domain), highlight:{background:domColor(s.domain), border:'#1f2933'}},
+      font:{size:14, color:'#1f2933', strokeWidth:4, strokeColor:'#ffffff'}});
+  });
+  DATAS.forEach(function(d){
+    nodes.push({id:'d:'+d.name, label:d.name, shape:'box',
+      color:{background:'#eef1f4', border:'#b7c0c9', highlight:{background:'#e2e6ea', border:'#68727d'}},
+      font:{size:12, color:'#3d4852'}, margin:6});
+  });
+  DOMS.forEach(function(m){
+    nodes.push({id:'m:'+m.name, label:'<b>'+m.name+'</b>', shape:'diamond', size:26,
+      color:{background:m.color, border:m.color, highlight:{background:m.color, border:'#1f2933'}},
+      font:{size:17, color:'#1f2933', multi:'html', strokeWidth:4, strokeColor:'#ffffff'}});
+  });
+  SITES.forEach(function(s){
+    s.data.forEach(function(d){
+      if(dataMap[d]) edges.push({id:'e'+(eid++), from:'s:'+s.name, to:'d:'+d, arrows:'from',
+        color:{color:'#98a3ae', highlight:'#4F86C6'}, width:1.4});
+    });
+    if(domMap[s.domain]) edges.push({id:'e'+(eid++), from:'s:'+s.name, to:'m:'+s.domain,
+      color:{color:domColor(s.domain), opacity:0.28}, width:1, dashes:false});
+  });
+
+  var nodesDS = new vis.DataSet(nodes), edgesDS = new vis.DataSet(edges);
+  var network = new vis.Network(document.getElementById('graph'), {nodes:nodesDS, edges:edgesDS}, {
+    interaction:{hover:true, tooltipDelay:200},
+    physics:{stabilization:{iterations:220}, barnesHut:{springLength:150, avoidOverlap:0.2}},
+    nodes:{borderWidth:2}, edges:{smooth:{type:'continuous'}}
+  });
+  network.once('stabilizationIterationsDone', function(){ network.setOptions({physics:false}); });
+
+  // ---- 필터 상태 (단일 원본) ----
+  var state = {q:'', doms:new Set(), onlyBad:false, sortKey:'name', sortDir:1, sel:null};
+
+  var chips = document.getElementById('chips');
+  function drawChips(){
+    var html = '<button class="chip' + (state.doms.size ? '' : ' on') + '" data-d="" style="' +
+      (state.doms.size ? '' : 'background:#1f2933') + '">전체</button>';
+    DOMS.forEach(function(m){
+      var on = state.doms.has(m.name);
+      html += '<button class="chip' + (on ? ' on' : '') + '" data-d="' + esc(m.name) + '" style="' +
+        (on ? 'background:' + esc(m.color) : 'color:' + esc(m.color)) + '">' + esc(m.name) + '</button>';
+    });
+    chips.innerHTML = html;
+  }
+  chips.addEventListener('click', function(e){
+    var b = e.target.closest('.chip'); if(!b) return;
+    var d = b.getAttribute('data-d');
+    if(!d) state.doms.clear();
+    else if(state.doms.has(d)) state.doms.delete(d);
+    else state.doms.add(d);
+    drawChips(); applyFilter();
+  });
+
+  document.getElementById('q').addEventListener('input', function(e){ state.q = e.target.value; applyFilter(); });
+  document.getElementById('onlybad').addEventListener('change', function(e){ state.onlyBad = e.target.checked; applyFilter(); });
+
+  // ---- 유일한 필터 계산 ----
+  var visibleSites = [];
+  function applyFilter(){
+    var q = state.q.trim().toLowerCase();
+    visibleSites = SITES.filter(function(s){
+      if(state.onlyBad && s.status.indexOf('error') !== 0) return false;
+      if(state.doms.size && !state.doms.has(s.domain)) return false;
+      if(!q) return true;
+      return (s.name + ' ' + s.desc + ' ' + s.author + ' ' + s.data.join(' ')).toLowerCase().indexOf(q) >= 0;
+    });
+    var vis = new Set(), dCount = new Set(), mCount = new Set();
+    visibleSites.forEach(function(s){
+      vis.add('s:' + s.name);
+      s.data.forEach(function(d){ if(dataMap[d]){ vis.add('d:' + d); dCount.add(d); } });
+      if(domMap[s.domain]){ vis.add('m:' + s.domain); mCount.add(s.domain); }
+    });
+    nodesDS.update(nodes.map(function(n){ return {id:n.id, hidden:!vis.has(n.id)}; }));
+    edgesDS.update(edges.map(function(e){ return {id:e.id, hidden:!(vis.has(e.from) && vis.has(e.to))}; }));
+    document.getElementById('h-meta').textContent =
+      '생성 ' + (DATA.generated_at || '') + ' · 사이트 ' + visibleSites.length + '/' + SITES.length +
+      ' · 참조데이터 ' + dCount.size + ' · 도메인 ' + mCount.size;
+    if(state.sel && !vis.has(state.sel)) closePanel();
+    applyDim();
+    renderList();
+  }
+
+  // ---- 선택 강조: 선택 노드와 직접 연결만 진하게, 나머지는 흐리게 ----
+  function applyDim(){
+    var keep = null;
+    if(state.sel && nodesDS.get(state.sel)){
+      keep = new Set(network.getConnectedNodes(state.sel)); keep.add(state.sel);
+    }
+    nodesDS.update(nodes.map(function(n){
+      var dim = keep && !keep.has(n.id);
+      return {id:n.id, opacity:dim ? 0.18 : 1,
+        font:Object.assign({}, n.font, dim ? {color:'#b7c0c9', strokeWidth:0} : {})};
+    }));
+    edgesDS.update(edges.map(function(e){
+      var dim = keep && !(keep.has(e.from) && keep.has(e.to) && (e.from === state.sel || e.to === state.sel));
+      return {id:e.id, color:Object.assign({}, e.color, {opacity:dim ? 0.06 : (e.color.opacity || 1)})};
+    }));
+  }
+
+  // ---- 패널 ----
+  var panel = document.getElementById('panel');
+  function closePanel(){ state.sel = null; panel.className = ''; panel.innerHTML = ''; applyDim(); }
+  panel.addEventListener('click', function(e){
+    if(e.target.classList.contains('close')) return closePanel();
+    var r = e.target.closest('.ref');
+    if(r) focusNode(r.getAttribute('data-node'));
+  });
+
+  function statusHtml(st){
+    if(st === 'ok') return '정상';
+    if(st === 'skipped') return '<span style="color:#68727d">확인 안 함</span>';
+    return '<span class="bad">' + esc(st) + '</span>';
+  }
+  // Claude 가 mappings.json 으로 만든 마스터 항목 표시
+  function cb(entry){
+    return (entry && entry.source === 'claude') ? '<span class="cb">Claude 분류</span>' : '';
+  }
+  function refList(items){
+    if(!items.length) return '<div style="color:#68727d">없음</div>';
+    return '<ul>' + items.map(function(x){
+      return '<li><span class="ref" data-node="' + esc(x[1]) + '">' + esc(x[0]) + '</span>' + cb(x[2]) + '</li>';
+    }).join('') + '</ul>';
+  }
+
+  function openPanel(id){
+    var kind = id.slice(0, 1), name = id.slice(2), h = '<button class="close" title="닫기">&times;</button>';
+    if(kind === 's'){
+      var s = siteMap[name]; if(!s) return;
+      h += '<h2>' + esc(s.name) + '</h2>' +
+        '<a class="open-btn" href="' + esc(s.url) + '" target="_blank" rel="noopener">열기</a>' +
+        '<div>' + esc(s.desc) + '</div><dl>' +
+        '<dt>도메인</dt><dd><span class="dot" style="background:' + esc(domColor(s.domain)) + '"></span>' +
+        '<span class="ref" data-node="m:' + esc(s.domain) + '">' + esc(s.domain) + '</span>' +
+        cb(domMap[s.domain]) + '</dd>' +
+        '<dt>작성자</dt><dd>' + esc(s.author) + '</dd>' +
+        '<dt>도구</dt><dd>' + esc(s.tool) + '</dd>' +
+        '<dt>등록일</dt><dd>' + esc(s.date) + '</dd>' +
+        '<dt>접속 상태</dt><dd>' + statusHtml(s.status) + '</dd>' +
+        '<dt>URL</dt><dd style="font-size:12px;color:#68727d">' + esc(s.url) + '</dd></dl>' +
+        '<div style="margin-top:14px"><b>참조데이터</b>' +
+        refList(s.data.map(function(d){ return [d, 'd:' + d, dataMap[d]]; })) + '</div>';
+      if(s.prompt) h += '<details><summary>프롬프트 보기</summary><pre>' + esc(s.prompt) + '</pre></details>';
+    } else if(kind === 'd'){
+      var d = dataMap[name]; if(!d) return;
+      var users = visibleSites.filter(function(s){ return s.data.indexOf(name) >= 0; });
+      h += '<h2>' + esc(d.name) + cb(d) + '</h2><dl><dt>종류</dt><dd>' + esc(d.kind) + '</dd>' +
+        '<dt>담당팀</dt><dd>' + esc(d.team) + '</dd></dl>' +
+        '<div style="margin-top:10px">' + esc(d.desc) + '</div>' +
+        '<div style="margin-top:14px"><b>참조하는 사이트 (' + users.length + ')</b>' +
+        refList(users.map(function(s){ return [s.name, 's:' + s.name]; })) + '</div>';
+    } else {
+      var m = domMap[name]; if(!m) return;
+      var list = visibleSites.filter(function(s){ return s.domain === name; });
+      h += '<h2><span class="dot" style="background:' + esc(m.color) + '"></span>' + esc(m.name) + cb(m) + '</h2>' +
+        '<div>' + esc(m.desc) + '</div>' +
+        '<div style="margin-top:14px"><b>사이트 (' + list.length + ')</b>' +
+        refList(list.map(function(s){ return [s.name, 's:' + s.name]; })) + '</div>';
+    }
+    panel.innerHTML = h;
+    panel.className = 'on';
+    state.sel = id;
+    applyDim();
+  }
+
+  network.on('click', function(p){
+    if(p.nodes.length) openPanel(p.nodes[0]);
+    else closePanel();
+  });
+
+  function focusNode(id){
+    if(!nodesDS.get(id)) return;
+    if(nodesDS.get(id).hidden){          // 숨겨진 노드면 필터를 풀고 보여준다
+      state.q = ''; state.doms.clear(); state.onlyBad = false;
+      document.getElementById('q').value = '';
+      document.getElementById('onlybad').checked = false;
+      drawChips(); applyFilter();
+    }
+    showTab('graph');
+    network.selectNodes([id]);
+    network.focus(id, {scale:1.1, animation:{duration:400}});
+    openPanel(id);
+  }
+
+  // ---- 탭 ----
+  function showTab(which){
+    document.getElementById('tab-graph').classList.toggle('on', which === 'graph');
+    document.getElementById('tab-list').classList.toggle('on', which === 'list');
+    document.getElementById('view-graph').classList.toggle('on', which === 'graph');
+    document.getElementById('view-list').classList.toggle('on', which === 'list');
+    if(which === 'graph'){                 // 숨겨진 채 만들어진 캔버스를 실제 크기로
+      network.setSize('100%', '100%'); network.redraw();
+      if(!showTab.fitted){ showTab.fitted = true; network.fit(); }
+    }
+  }
+  document.getElementById('tab-graph').addEventListener('click', function(){ showTab('graph'); });
+  document.getElementById('tab-list').addEventListener('click', function(){ showTab('list'); });
+
+  // ---- 목록 ----
+  var tbody = document.getElementById('tbody');
+  function sortVal(s, k){ return k === 'data' ? s.data.join(', ') : String(s[k] || ''); }
+  function claudeCell(s){                // 상태 칸에 붙는 Claude 분류 표시 + 툴팁
+    var n = [];
+    if(cb(domMap[s.domain])) n.push('도메인 ' + s.domain);
+    s.data.forEach(function(d){ if(cb(dataMap[d])) n.push('참조데이터 ' + d); });
+    return n.length ? '<span class="cb" title="Claude 분류: ' + esc(n.join(', ')) + '">Claude 분류</span>' : '';
+  }
+  function renderList(){
+    var rows = visibleSites.slice().sort(function(a, b){
+      return sortVal(a, state.sortKey).localeCompare(sortVal(b, state.sortKey), 'ko') * state.sortDir;
+    });
+    tbody.innerHTML = rows.map(function(s){
+      return '<tr data-node="s:' + esc(s.name) + '">' +
+        '<td><a href="' + esc(s.url) + '" target="_blank" rel="noopener">' + esc(s.name) + '</a></td>' +
+        '<td><span class="dot" style="background:' + esc(domColor(s.domain)) + '"></span>' + esc(s.domain) + '</td>' +
+        '<td>' + esc(s.data.join(', ')) + '</td>' +
+        '<td>' + esc(s.author) + '</td>' +
+        '<td>' + esc(s.date) + '</td>' +
+        '<td>' + statusHtml(s.status) + claudeCell(s) + '</td></tr>';
+    }).join('');
+    document.getElementById('list-empty').style.display = rows.length ? 'none' : 'block';
+  }
+  document.querySelectorAll('th[data-k]').forEach(function(th){
+    th.addEventListener('click', function(){
+      var k = th.getAttribute('data-k');
+      state.sortDir = (state.sortKey === k) ? -state.sortDir : 1;
+      state.sortKey = k;
+      document.querySelectorAll('th[data-k]').forEach(function(x){
+        x.textContent = x.textContent.replace(/ [▲▼]$/, '');
+      });
+      th.textContent += state.sortDir > 0 ? ' ▲' : ' ▼';
+      renderList();
+    });
+  });
+  tbody.addEventListener('click', function(e){
+    if(e.target.closest('a')) return;
+    var tr = e.target.closest('tr'); if(!tr) return;
+    focusNode(tr.getAttribute('data-node'));
+  });
+
+  drawChips();
+  applyFilter();
+})();
+</script>
+</body>
+</html>
