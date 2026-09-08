@@ -15,20 +15,22 @@ import subprocess
 import sys
 import traceback
 import urllib.parse
+import shutil
 from datetime import datetime
 
 import requests
+import knowledge
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TABS = {"sites": "사이트", "domains": "도메인", "data": "참조데이터"}
-SITE_HEADERS = ["사이트명", "URL", "소개", "도메인", "참조데이터", "작성자", "도구", "프롬프트", "등록일", "승인", "비고"]
+SITE_HEADERS = ["ID", "사이트명", "URL", "소개", "도메인", "참조데이터", "작성자", "도구", "프롬프트", "등록일", "승인", "비고"]
 # 영문 탭·헤더·속성 이름도 받는다. 내부에서는 한국어 이름으로 통일한다.
 EN_TABS = {"sites": "sites", "domains": "domains", "data": "data_sources"}
 EN_HEADERS = {
-    "sites": {"name": "사이트명", "url": "URL", "description": "소개", "domain": "도메인", "data_sources": "참조데이터",
+    "sites": {"id": "ID", "name": "사이트명", "url": "URL", "description": "소개", "domain": "도메인", "data_sources": "참조데이터",
               "author": "작성자", "tool": "도구", "prompt": "프롬프트", "date": "등록일", "approved": "승인", "note": "비고"},
     "domains": {"name": "도메인명", "description": "설명", "color": "색상"},
-    "data": {"name": "데이터명", "kind": "종류", "team": "담당팀", "description": "설명"},
+    "data": {"id": "ID", "name": "데이터명", "kind": "종류", "team": "담당팀", "description": "설명"},
 }
 
 
@@ -229,7 +231,7 @@ def build_data(rows):
         if not name or name in seen:
             continue
         seen.add(name)
-        out.append({"name": name, "kind": txt(r, "종류"), "team": txt(r, "담당팀"), "desc": txt(r, "설명")})
+        out.append({"id": txt(r, "ID"), "name": name, "kind": txt(r, "종류"), "team": txt(r, "담당팀"), "desc": txt(r, "설명")})
     return out
 
 
@@ -395,7 +397,7 @@ def build_sites(rows, domains, datas):
         seen_name[name] = rownum
         seen_url[url] = rownum
         sites.append({
-            "row": rownum, "name": name, "url": url, "desc": txt(r, "소개"),
+            "row": rownum, "id": txt(r, "ID"), "name": name, "url": url, "desc": txt(r, "소개"),
             "domain": domain, "data": refs, "author": txt(r, "작성자"),
             "tool": txt(r, "도구"), "prompt": txt(r, "프롬프트"),
             "date": txt(r, "등록일"), "note": txt(r, "비고"), "status": "skipped",
@@ -416,7 +418,7 @@ def check_urls(sites):
 
 # ---------- 스냅샷 비교 ----------
 
-COMPARE = ["url", "desc", "domain", "author", "tool", "prompt", "date"]
+COMPARE = ["id", "url", "desc", "domain", "author", "tool", "date"]
 
 
 def snap_of(sites):
@@ -439,18 +441,100 @@ def diff(new, old):
     return added, changed, removed
 
 
-# ---------- 출력 ----------
+# ---------- v2 변환 / 출력 ----------
+
+def legacy_payload(sites, datas, cfg, generated_at):
+    """Approved legacy sites become tools; only their referenced master data becomes documents."""
+    items, relations, data_by_name = [], [], {d["name"]: d for d in datas}
+    used_data = {name for s in sites for name in s["data"]}
+    for d in datas:
+        if d["name"] not in used_data:
+            continue
+        item_id = d.get("id") or knowledge.stable_id("document", d["name"])
+        data_by_name[d["name"]]["_item_id"] = item_id
+        items.append({"id": item_id, "title": d["name"], "kind": "document", "subtype": d["kind"],
+                      "description": d["desc"], "owner": d["team"], "department": d["team"],
+                      "domain": "", "tags": []})
+    for site in sites:
+        # URL-derived legacy identity is stable until an explicit ID is supplied; renaming is a migration boundary.
+        item_id = site.get("id") or knowledge.stable_id("tool", knowledge.normalized_url(site["url"]))
+        items.append({"id": item_id, "title": site["name"], "kind": "tool", "subtype": site["tool"],
+                      "description": site["desc"], "owner": site["author"], "department": "",
+                      "domain": site["domain"], "tags": [], "url": site["url"], "updatedAt": site["date"],
+                      "status": "published"})
+        for data_name in site["data"]:
+            target = data_by_name[data_name]["_item_id"]
+            relations.append({"id": knowledge.stable_id("relation", item_id + "|" + target + "|references"),
+                              "source": item_id, "target": target, "type": "references", "label": "참조"})
+    return knowledge.validate_payload({"schemaVersion": 2, "title": cfg.get("site_title", "KMS"),
+                                       "generatedAt": generated_at, "items": items, "relations": relations})
+
+
+def state_directory(out_dir, cfg):
+    configured = cfg.get("state_dir")
+    if configured:
+        return os.path.abspath(configured)
+    parent, name = os.path.dirname(out_dir), os.path.basename(out_dir.rstrip(os.sep))
+    return os.path.join(parent, ".%s-state" % name)
+
+
+def _real(path):
+    return os.path.normcase(os.path.realpath(os.path.abspath(path)))
+
+
+def _inside(parent, child):
+    try:
+        return os.path.commonpath([_real(parent), _real(child)]) == _real(parent)
+    except ValueError:
+        return False
+
+
+def validate_publish_paths(out_dir, cfg, repo_dir=None):
+    """Reject public-root output and any state directory in public output before reads/writes."""
+    out_dir = _real(out_dir)
+    if repo_dir:
+        repo_dir = _real(repo_dir)
+        if out_dir == repo_dir or not _inside(repo_dir, out_dir):
+            raise SystemExit("게시 출력은 repo_dir 아래의 별도 하위 디렉터리여야 합니다.")
+    state_dir = _real(state_directory(out_dir, cfg))
+    if _inside(out_dir, state_dir):
+        raise SystemExit("state_dir 는 게시 출력 폴더 또는 그 하위에 둘 수 없습니다.")
+    return out_dir, state_dir
+
+
+def atomic_json(path, value):
+    directory = os.path.dirname(path)
+    os.makedirs(directory, exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(value, f, ensure_ascii=False, indent=1)
+    os.replace(tmp, path)
+
+
+def public_template():
+    dist = os.path.join(HERE, "frontend", "dist", "index.html")
+    return dist if os.path.exists(dist) else os.path.join(HERE, "template.html")
+
+
+def copy_assets(template_path, out_dir):
+    source = os.path.join(os.path.dirname(template_path), "assets")
+    if os.path.isdir(source):
+        shutil.copytree(source, os.path.join(out_dir, "assets"), dirs_exist_ok=True)
+
 
 def render(out_dir, payload):
-    with open(os.path.join(HERE, "template.html"), encoding="utf-8") as f:
+    template_path = public_template()
+    with open(template_path, encoding="utf-8") as f:
         html = f.read()
     blob = json.dumps(payload, ensure_ascii=False).replace("</", "<\\/")
     if "/*__KMS_DATA__*/" not in html:
         raise SystemExit("template.html 에 /*__KMS_DATA__*/ 자리표시자가 없습니다.")
     html = html.replace("/*__KMS_DATA__*/", blob)
     path = os.path.join(out_dir, "index.html")
-    with open(path, "w", encoding="utf-8") as f:
+    with open(path + ".tmp", "w", encoding="utf-8") as f:
         f.write(html)
+    os.replace(path + ".tmp", path)
+    copy_assets(template_path, out_dir)
     return path
 
 
@@ -459,15 +543,24 @@ def git_push(repo_dir, out_dir):
         return subprocess.run(args, cwd=repo_dir, capture_output=True, text=True, encoding="utf-8", errors="replace")
 
     rel = os.path.relpath(out_dir, repo_dir)
-    r = run("git", "add", "-A", rel)
+    allowed = [os.path.join(rel, name) for name in ("index.html", "assets", ".nojekyll")
+               if os.path.exists(os.path.join(out_dir, name))]
+    if not allowed:
+        print("게시 산출물이 없습니다: %s" % out_dir)
+        return False
+    r = run("git", "add", "--", *allowed)
     if r.returncode != 0:
         print("git add 실패: %s" % r.stderr.strip())
         return False
     msg = "kms: %s" % datetime.now().strftime("%Y-%m-%d")
-    r = run("git", "commit", "-m", msg)
+    r = run("git", "commit", "--only", "-m", msg, "--", *allowed)
     if r.returncode != 0:
-        print("커밋할 변경이 없습니다. (%s)" % (r.stdout.strip().splitlines() or [""])[0])
-        return True
+        combined = (r.stdout + r.stderr).lower()
+        if "nothing to commit" in combined or "no changes" in combined:
+            print("게시 산출물에 커밋할 변경이 없습니다.")
+            return True
+        print("git commit 실패: %s" % r.stderr.strip())
+        return False
     r = run("git", "push")
     if r.returncode != 0:
         print("git push 실패: %s" % r.stderr.strip())
@@ -500,6 +593,8 @@ def mappings_path(cfg):
 
 
 def build(args, cfg, out_dir):
+    # Validate before source reading or URL checks: no unsafe path gets a side effect.
+    out_dir, state_dir = validate_publish_paths(out_dir, cfg)
     raw = read_source(args, cfg)
     domains = build_domains(raw["domains"])
     datas = build_data(raw["data"])
@@ -510,8 +605,13 @@ def build(args, cfg, out_dir):
     if do_check:
         check_urls(sites)
 
+    # Never silently leave old internal reports in a public directory.
+    legacy_private = [n for n in ("snapshot.json", "report.json", "unmatched.json") if os.path.exists(os.path.join(out_dir, n))]
+    if legacy_private:
+        raise SystemExit("게시 폴더에 기존 내부 파일이 있습니다 (%s). 새 빈 출력 경로를 사용하거나 먼저 안전하게 이동하세요."
+                         % ", ".join(legacy_private))
     os.makedirs(out_dir, exist_ok=True)
-    snap_path = os.path.join(out_dir, "snapshot.json")
+    snap_path = os.path.join(state_dir, "snapshot.json")
     old = {}
     if os.path.exists(snap_path):
         try:
@@ -523,26 +623,21 @@ def build(args, cfg, out_dir):
     added, changed, removed = diff(new, old)
 
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
-    page = render(out_dir, {
-        "title": cfg.get("site_title", "KMS"),
-        "generated_at": generated_at,
-        "page_url": cfg.get("page_url", ""),
-        "sites": [{k: s[k] for k in
-                   ("name", "url", "desc", "domain", "data", "author", "tool", "prompt", "date", "status")}
-                  for s in sites],
-        "data": datas,
-        "domains": domains,
-    })
-    with open(snap_path, "w", encoding="utf-8") as f:
-        json.dump(new, f, ensure_ascii=False, indent=1)
+    payload = legacy_payload(sites, datas, cfg, generated_at)
+    knowledge_file = getattr(args, "knowledge", None) or cfg.get("knowledge_file")
+    if knowledge_file:
+        payload = knowledge.merge_payloads(payload, knowledge.load_knowledge(knowledge_file))
+    page = render(out_dir, payload)
+    atomic_json(snap_path, new)
 
     unmatched = build_unmatched(unclassified, domains, datas)
-    with open(os.path.join(out_dir, "unmatched.json"), "w", encoding="utf-8") as f:
-        json.dump(unmatched, f, ensure_ascii=False, indent=1)
+    atomic_json(os.path.join(state_dir, "unmatched.json"), unmatched)
 
     report = {
         "generated_at": generated_at,
         "counts": {"sites": len(sites), "data": len(datas), "domains": len(domains)},
+        "counts_scope": "source master counts; public payload only includes referenced approved documents",
+        "public_counts": {"items": len(payload["items"]), "relations": len(payload["relations"])},
         "added": added, "changed": changed, "removed": removed,
         "pending_approval": pending, "errors": errors,
         "pending_mapping": {"count": len(unclassified), "items": unclassified},
@@ -551,8 +646,7 @@ def build(args, cfg, out_dir):
                         for s in sites if s["status"].startswith("error")],
         "page_url": cfg.get("page_url", ""),
     }
-    with open(os.path.join(out_dir, "report.json"), "w", encoding="utf-8") as f:
-        json.dump(report, f, ensure_ascii=False, indent=1)
+    atomic_json(os.path.join(state_dir, "report.json"), report)
 
     print("생성: %s" % page)
     print("사이트 %d개 / 참조데이터 %d개 / 도메인 %d개" % (len(sites), len(datas), len(domains)))
@@ -567,7 +661,7 @@ def build(args, cfg, out_dir):
         print("  [Claude 분류] %s '%s' -> '%s' (%s)" % (c["종류"], c["원본"], c["결과"], c["why"]))
     if has_unmatched(unmatched):
         print("분류 대기 값이 있습니다. %s 를 읽고 %s 에 매핑을 추가한 뒤 다시 빌드하세요."
-              % (os.path.join(out_dir, "unmatched.json"), mappings_path(cfg)))
+              % (os.path.join(state_dir, "unmatched.json"), mappings_path(cfg)))
     return report
 
 
@@ -577,6 +671,7 @@ def main():
     p.add_argument("--source", choices=["sheets", "notion"], help="config.json 의 source 를 덮어쓴다")
     p.add_argument("--csv-dir", help="CSV 폴더에서 읽기 (사이트.csv / 도메인.csv / 참조데이터.csv)")
     p.add_argument("--out", default="out", help="--csv-dir 일 때 출력 폴더 (기본 out)")
+    p.add_argument("--knowledge", help="schemaVersion 2 지식 JSON을 병합한다")
     p.add_argument("--push", action="store_true", help="빌드 후 git commit/push")
     p.add_argument("--no-push", action="store_true", help="푸시하지 않음 (기본값)")
     p.add_argument("--check-urls", dest="check_urls", action="store_true", default=None)
@@ -596,20 +691,29 @@ def main():
     if not args.config and not args.csv_dir:
         p.error("--config 또는 --csv-dir 중 하나가 필요합니다.")
 
+    repo = cfg.get("repo_dir", "")
     if args.csv_dir:
         out_dir = os.path.abspath(args.out)
     else:
-        repo = cfg.get("repo_dir", "")
         if not repo:
             raise SystemExit("config.json 에 repo_dir 이 필요합니다.")
-        out_dir = os.path.abspath(os.path.join(repo, cfg.get("out_subdir", "docs")))
+        subdir = cfg.get("out_subdir", "docs")
+        if os.path.isabs(subdir):
+            raise SystemExit("out_subdir 는 repo_dir 아래 상대 경로여야 합니다.")
+        out_dir = os.path.abspath(os.path.join(repo, subdir))
+    # Config output and --csv-dir --push both must be a child of the publish repo.
+    if not args.csv_dir or (args.push and not args.no_push):
+        if not repo:
+            raise SystemExit("--push 에는 config.json 의 repo_dir 이 필요합니다.")
+        validate_publish_paths(out_dir, cfg, repo)
+    else:
+        validate_publish_paths(out_dir, cfg)
 
     build(args, cfg, out_dir)
 
     if args.push and not args.no_push:
-        if not cfg.get("repo_dir"):
-            raise SystemExit("--push 에는 config.json 의 repo_dir 이 필요합니다.")
-        git_push(cfg["repo_dir"], out_dir)
+        if not git_push(repo, out_dir):
+            return 1
     return 0
 
 

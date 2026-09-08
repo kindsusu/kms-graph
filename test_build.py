@@ -6,6 +6,7 @@ import os
 import shutil
 import sys
 import tempfile
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -133,7 +134,8 @@ try:
     assert report["pending_mapping"]["count"] == 1, report["pending_mapping"]
     assert report["claude_classified"] == [], report["claude_classified"]
 
-    with open(os.path.join(out_dir, "unmatched.json"), encoding="utf-8") as f:
+    state_dir = build.state_directory(out_dir, cfg)
+    with open(os.path.join(state_dir, "unmatched.json"), encoding="utf-8") as f:
         um = json.load(f)
     assert [x["value"] for x in um["참조데이터"]] == ["인사규정 노션"], um
 
@@ -151,7 +153,7 @@ try:
     assert report3["counts"]["sites"] == 8 and report3["pending_mapping"]["count"] == 0, report3["counts"]
     assert report3["added"] == ["사규 검색 챗봇"], report3["added"]
     assert len(report3["claude_classified"]) == 1, report3["claude_classified"]
-    with open(os.path.join(out_dir, "unmatched.json"), encoding="utf-8") as f:
+    with open(os.path.join(state_dir, "unmatched.json"), encoding="utf-8") as f:
         assert not build.has_unmatched(json.load(f))
 
     # JSON 안의 </ 이스케이프
@@ -187,5 +189,18 @@ en_rows = build.read_csv_dir(en)
 assert en_rows["sites"][0]["사이트명"] == "Leave Calc" and en_rows["sites"][0]["승인"] == "TRUE", en_rows["sites"]
 assert en_rows["domains"][0]["도메인명"] == "HR" and en_rows["data"][0]["데이터명"] == "HR export", en_rows
 shutil.rmtree(en, ignore_errors=True)
+
+# CLI propagates a failed push as a non-zero exit without invoking real git.
+cli = tempfile.mkdtemp(prefix="kms-cli-")
+try:
+    cfg_path = os.path.join(cli, "config.json")
+    with open(cfg_path, "w", encoding="utf-8") as f:
+        json.dump({"repo_dir": cli, "out_subdir": "public", "check_urls": False}, f)
+    with mock.patch.object(sys, "argv", ["build.py", "--config", cfg_path, "--push"]), \
+         mock.patch("build.build", return_value={}), \
+         mock.patch("build.git_push", return_value=False):
+        assert build.main() == 1
+finally:
+    shutil.rmtree(cli, ignore_errors=True)
 
 print("테스트 통과")

@@ -1,136 +1,68 @@
-<p align="center"><img src="assets/kms-graph-hero-v2.svg" alt="KMS Graph, connected knowledge organized by business domain" width="100%"></p>
+<p align="center"><img src="assets/kms-graph-hero-v2.svg" alt="KMS Graph, a portal for exploring connected workplace knowledge" width="100%"></p>
 
 # KMS Graph
 
-English · [Korean](README.ko.md)
+English · [한국어](README.ko.md)
 
-A Claude Code skill that turns the web apps your employees build into a single static page with a **graph view and a list view**.
-Employees register their apps in a Google Sheet or a Notion database. Once an admin approves an entry, the page is rebuilt daily, pushed to GitHub Pages, and a summary is posted to a Teams channel.
+KMS Graph is a read-focused internal knowledge portal for searching and exploring documents, work tools, and AI assets. It embeds approved material collected from CSV, Google Sheets, or Notion in a static site. Domain, department, and tags remain searchable metadata rather than graph nodes. Prompt text is accepted and displayed only for AI assets with the `프롬프트` subtype.
 
-## How it works
+## Quick start
 
-```
-Employees → register an app in the sheet or Notion (name · URL · description · domain · data sources · prompt)
-Admin     → tick "approved"
-build.py
-   1. read approved rows
-   2. validate against the master lists (domains · data sources) and check formats
-   3. probe each URL
-   4. diff against yesterday's snapshot: added · changed · removed
-   5. render index.html (data embedded; the only external dependency is vis-network)
-   6. git push → GitHub Pages
-Claude    → reads the report and posts an admin summary to Teams
-```
-
-The graph has three kinds of nodes.
-
-| Node | Shape | Meaning |
-|---|---|---|
-| Domain | diamond | A business area. Groups the sites |
-| Site | circle | A web app built by an employee |
-| Data source | square | A sheet, document, or system the app reads |
-
-The list tab opens first. In the graph tab, clicking a node shows its URL, description, author, tool, prompt, and data sources in a side panel. Search and domain filters are shared by both tabs.
-
-When a submitted domain or data-source value is not in the master list, the row is held as "pending classification". Claude decides whether it matches an existing entry or needs a new one and records the decision, with a one-line reason, in `mappings.json`. A decision is never asked again, and every classification made that day is listed in the Teams message. Admins can override by editing `mappings.json` or the original value.
-
-## Install
-
-Requirements: Python 3.10+, `requests`. Add `google-auth` if you read from Google Sheets.
+Node.js 22.12+ (recommended) and Python 3.10+ are required. If using Node.js 20, use 20.19 or newer. Run from the repository root:
 
 ```bash
-git clone https://github.com/kindsusu/kms-graph "$HOME/.claude/skills/kms-graph"
-pip install requests google-auth
-```
-
-Type `/kms-graph` in Claude Code. On the first run it asks which source you use (Google Sheets or Notion) and the values it needs, then writes `config.json`. To set it up by hand, copy `config.example.json`.
-
-## Prepare the source
-
-### Google Sheets
-
-One spreadsheet with three tabs. Tab names and the header row must match exactly (Korean names are accepted as well; the files in `sample/` use them).
-
-- `sites` tab: name · url · description · domain · data_sources · author · tool · prompt · date · approved · note
-- `domains` tab: name · description · color
-- `data_sources` tab: name · kind · team · description
-
-Make `approved` a checkbox and give `domain` a data-validation dropdown pointing at the `domains` tab. Separate multiple `data_sources` values with commas. Link a Google Form to the `sites` tab so employees can submit through the form.
-
-Read access goes through a service account. Enable the Sheets API in Google Cloud, create a service-account key (JSON), and share the spreadsheet with the service-account email as a viewer. Put the key path in `service_account_json`.
-
-### Notion database
-
-Set `source` to `notion` in `config.json` and prepare one database for sites. Property names are the same as the sheet headers.
-
-| Property | Type |
-|---|---|
-| name | Title |
-| url | URL |
-| domain | Select (its options become the domain master list) |
-| data_sources | Multi-select (its options become the data-source master list) |
-| approved | Checkbox |
-| description · author · tool · prompt · note | Text |
-| date | Date |
-
-Create a read-only integration at notion.so/my-integrations, put its token in `notion_token`, and connect the integration to the database from the database's connection menu. The database ID is the 32-character value in the URL; put it in `notion_db_sites`. To manage the type, owning team, and description of each data source, create a second database and set `notion_db_data`.
-
-## Publish and notify
-
-- **GitHub Pages**: create a repository for the page, clone it, commit a `docs/` folder, and set Settings > Pages to the `main` branch, `/docs` folder. Put the clone path in `repo_dir`.
-- **Access control**: a GitHub Pages site is public even when the repository is private. Point a company domain at it through Cloudflare and add a Zero Trust Access policy that allows only your company email domain, so only signed-in staff can open the page.
-- **Teams**: in Power Automate, build a flow with the trigger "When a Teams webhook request is received" and the action "Post card in a chat or channel". Put the generated URL in `teams_webhook`.
-
-## config.json
-
-```json
-{
-  "source": "sheets",
-  "sheet_id": "",
-  "service_account_json": "C:/keys/kms-sheets.json",
-  "notion_token": "",
-  "notion_db_sites": "",
-  "notion_db_data": "",
-  "mappings_file": "mappings.json",
-  "check_urls": true,
-  "repo_dir": "C:/work/kms-pages",
-  "out_subdir": "docs",
-  "page_url": "https://kms.example.com",
-  "teams_webhook": "",
-  "site_title": "KMS"
-}
-```
-
-Keep `config.json` out of git. Keep `mappings.json` in git. Set `check_urls` to `false` when building outside the network that hosts intranet-only apps.
-
-## Run
-
-```bash
-# dry run (touches neither the sheet nor the repository)
+npm --prefix frontend ci
+npm --prefix frontend run build
 python build.py --csv-dir sample --out out --no-check-urls
-
-# real build and push
-python build.py --config config.json --push
-
-# send the notification
-python build.py --config config.json --notify out/message.md
-
-# self-check
-python test_build.py
+python -m http.server --directory out 8765
 ```
 
-For the daily run, pick one. A Claude Code scheduled task on the admin's PC can probe intranet URLs and keeps the key file local, but the PC must be on at that time. A claude.ai cloud routine runs regardless of the PC, but needs the key and webhook stored as environment secrets and cannot reach the intranet.
+Open `http://localhost:8765`. Opening `index.html` directly over `file://` can prevent Workers and assets from loading under browser security rules.
 
-## Files
+For frontend development, run `npm --prefix frontend run dev`. The dev server uses 150 clearly marked sample items only when no embedded data exists. Open `http://localhost:5173/?demo=1000` for a 1,000-item graph stress check; this option has no effect in published builds.
 
-| File | Role |
+## Using the portal
+
+- Start in the compact library list to compare title, type, domain, owner, connected-item count, and update date. Switch to the graph to pan, zoom, and explore relationships.
+- List view uses the same search, type, and business-domain filters. Opening a row keeps the list in place; its graph icon explicitly moves to the selected node.
+- Press `/` to focus search and `Esc` to clear it. Selection is stored in the URL hash for browser back/forward navigation and shareable item links.
+- `Open original` appears only when a work tool has a safe HTTP(S) address.
+
+## Inputs and builds
+
+Local CSV examples are in `sample/`. For operational input, copy `config.example.json` to the ignored `config.json` and configure read access to Google Sheets or Notion. External collection is not tested without account credentials. Never commit `config.json`, service-account keys, or tokens.
+
+Schema version 2 JSON can add richer knowledge items and explicit relationships:
+
+```bash
+python build.py --csv-dir sample --knowledge sample/knowledge.json --out out --no-check-urls
+```
+
+The generated HTML contains all published data. Anyone who can read the static files can read that data; this application does not implement per-document authorization. Review the hosting and authentication layer before any external publication.
+
+## Verification
+
+```bash
+npm --prefix frontend run typecheck
+npm --prefix frontend test
+npm --prefix frontend run build
+python test_build.py
+python test_knowledge.py
+```
+
+The current scope is a searchable, read-only portal over collected material. SSO, server persistence, collaborative editing, uploads, registration or permission controls in the UI, AI execution, real-account setup, and external deployment are outside this implementation.
+
+The portal published through Cloudflare is read-only. Add, edit, or remove material in the connected Notion or Google Sheets source; the next static-site build publishes those changes.
+
+## Main files
+
+| Path | Role |
 |---|---|
-| `SKILL.md` | The daily procedure Claude follows |
-| `build.py` | Read · validate · probe · diff · render · push · notify |
-| `template.html` | Page template |
-| `config.example.json` | Config example |
-| `sample/` | Sample CSVs and a mappings example |
-| `test_build.py` | Self-check |
+| `frontend/` | React + TypeScript UI and graph Worker |
+| `build.py` | Input collection, validation, and static-site build |
+| `knowledge.py` | Schema version 2 knowledge processing |
+| `sample/` | Local test inputs |
+| `out/` | Generated publish output (ignored by Git) |
 
 ## License
 

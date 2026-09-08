@@ -1,0 +1,15 @@
+{
+  "name": "kms-graph-static",
+  "private": true,
+  "version": "2.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "npm --prefix frontend run build",
+    "sample:build": "npm --prefix frontend run build && python build.py --csv-dir sample --out out --no-check-urls",
+    "dev": "wrangler dev --port 8787",
+    "deploy:dry-run": "wrangler deploy --dry-run"
+  },
+  "devDependencies": {
+    "wrangler": "4.36.0"
+  }
+}

@@ -6,6 +6,8 @@
   "notion_db_sites": "",
   "notion_db_data": "",
   "mappings_file": "mappings.json",
+  "knowledge_file": "sample/knowledge.json",
+  "state_dir": "C:/path/.kms-state",
   "check_urls": true,
   "repo_dir": "C:/path/kms-pages",
   "out_subdir": "docs",
