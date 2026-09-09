@@ -6,11 +6,10 @@
   "notion_db_sites": "",
   "notion_db_data": "",
   "mappings_file": "mappings.json",
-  "knowledge_file": "sample/knowledge.json",
-  "state_dir": "C:/path/.kms-state",
+  "knowledge_file": "",
   "check_urls": true,
   "repo_dir": "C:/path/kms-pages",
-  "out_subdir": "docs",
+  "out_subdir": "out",
   "page_url": "https://kms.example.com",
   "teams_webhook": "",
   "site_title": "KMS"

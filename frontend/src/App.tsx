@@ -1,6 +1,7 @@
 import { Component, type ErrorInfo, type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import GraphCanvas from './graph/GraphCanvas';
 import { isSafeExternalUrl, loadPayload } from './data';
+import { writeSelectionHistory } from './navigation';
 import type { GraphStats, ItemKind, KnowledgeItem, KnowledgePayload, KnowledgeRelation } from './model';
 
 type View = 'graph' | 'list';
@@ -48,10 +49,9 @@ function useHashSelection(validIds: ReadonlySet<string>) {
     addEventListener('hashchange', sync);
     return () => removeEventListener('hashchange', sync);
   }, [validIds]);
-  const select = (id: string | null) => {
+  const select = (id: string | null, replace = false) => {
     if (id === selectedId) return;
-    if (id) history.pushState(null, '', `#item=${encodeURIComponent(id)}`);
-    else history.pushState(null, '', `${location.pathname}${location.search}`);
+    writeSelectionHistory(history, location.pathname, location.search, id, replace);
     setState(id);
   };
   return [selectedId, select] as const;
@@ -62,9 +62,11 @@ function DetailPanel({ item, relations, byId, onClose, onNavigate }: {
   onClose: () => void; onNavigate: (id: string) => void;
 }) {
   const related = relations.filter((relation) => relation.source === item.id || relation.target === item.id);
-  return <aside className="detail-panel" aria-label="자료 상세">
-    <div className="detail-head"><span className={`kind-pill ${item.kind}`}>{KIND_SHORT[item.kind]} · {item.subtype || '미분류'}</span><button className="icon-button" onClick={onClose} aria-label="상세 닫기"><Icon name="close" /></button></div>
-    <h2>{item.title}</h2><p className="lede">{item.description || '설명이 등록되지 않았습니다.'}</p>
+  const closeRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => { closeRef.current?.focus(); }, [item.id]);
+  return <aside className="detail-panel" aria-labelledby="detail-title">
+    <div className="detail-head"><span className={`kind-pill ${item.kind}`}>{KIND_SHORT[item.kind]} · {item.subtype || '미분류'}</span><button ref={closeRef} className="icon-button" onClick={onClose} aria-label="상세 닫기"><Icon name="close" /></button></div>
+    <h2 id="detail-title">{item.title}</h2><p className="lede">{item.description || '설명이 등록되지 않았습니다.'}</p>
     <dl className="metadata">
       <div><dt>담당</dt><dd>{item.owner || '미등록'}</dd></div><div><dt>부서</dt><dd>{item.department || '미등록'}</dd></div>
       <div><dt>업무 분야</dt><dd>{item.domain || '미분류'}</dd></div><div><dt>상태</dt><dd>{item.status || '미등록'}</dd></div>
@@ -99,6 +101,7 @@ function Workspace({ payload }: { payload: KnowledgePayload }) {
   const [stats, setStats] = useState<GraphStats>({ visibleNodes: payload.items.length, visibleEdges: payload.relations.length, layoutRunning: true });
   const [theme, setTheme] = useState<Theme>(() => { try { return localStorage.getItem('kms-theme') === 'dark' ? 'dark' : 'light'; } catch { return 'light'; } });
   const searchRef = useRef<HTMLInputElement>(null);
+  const selectionTriggerRef = useRef<HTMLElement | null>(null);
   const domains = useMemo(() => [...new Set(payload.items.map((item) => item.domain))].sort((a, b) => a.localeCompare(b, 'ko')), [payload.items]);
   const relationCount = useMemo(() => {
     const neighbors = new Map(payload.items.map((item) => [item.id, new Set<string>()]));
@@ -133,9 +136,12 @@ function Workspace({ payload }: { payload: KnowledgePayload }) {
   const selected = selectedId ? byId.get(selectedId) ?? null : null;
   const pages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const shown = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
-  useEffect(() => { if (selectedId && !visibleIds.has(selectedId)) { select(null); setDepth(0); } }, [selectedId, visibleIds]);
+  useEffect(() => { if (selectedId && !visibleIds.has(selectedId)) { select(null, true); setDepth(0); } }, [selectedId, visibleIds]);
   const chooseKind = (next: ItemKind | 'all') => { setKind(next); setView('list'); };
-  const showInGraph = (id: string) => { select(id); setView('graph'); setFocusNonce((value) => value + 1); };
+  const selectFrom = (id: string, trigger?: HTMLElement | null) => { selectionTriggerRef.current = trigger ?? document.activeElement as HTMLElement | null; select(id); };
+  const closeDetail = () => { const trigger = selectionTriggerRef.current; select(null); requestAnimationFrame(() => trigger?.isConnected && trigger.focus()); };
+  const navigateRelation = (id: string) => { setQuery(''); setKind('all'); setDomain('all'); select(id); };
+  const showInGraph = (id: string, trigger?: HTMLElement | null) => { selectionTriggerRef.current = trigger ?? document.activeElement as HTMLElement | null; select(id); setView('graph'); setFocusNonce((value) => value + 1); };
 
   return <div className={`app-shell ${selected ? 'has-detail' : ''}`}>
     <header className="topbar"><button className="brand" onClick={() => chooseKind('all')}><span className="brand-mark">K</span><span>{payload.title}</span></button>
@@ -162,20 +168,20 @@ function Workspace({ payload }: { payload: KnowledgePayload }) {
         <div className="graph-toolbar"><span><strong>{stats.visibleNodes.toLocaleString()}</strong>개 자료 · <strong>{stats.visibleEdges.toLocaleString()}</strong>개 연결 {stats.layoutRunning && <i>배치 중</i>}</span>
           <div className="depth-control" aria-label="연결 범위"><button className={depth === 0 ? 'active' : ''} onClick={() => setDepth(0)}>전체</button><button disabled={!selected} className={depth === 1 ? 'active' : ''} onClick={() => setDepth(1)}>1단계</button><button disabled={!selected} className={depth === 2 ? 'active' : ''} onClick={() => setDepth(2)}>2단계</button>{selected && <button onClick={() => setFocusNonce((value) => value + 1)}>선택으로 이동</button>}</div>
         </div>
-        <GraphBoundary><GraphCanvas items={payload.items} relations={payload.relations} selectedId={selectedId} onSelect={select} visibleIds={visibleIds} localDepth={depth} focusRequest={selectedId ? { id: selectedId, nonce: focusNonce } : null} onStats={setStats} /></GraphBoundary>
+        <GraphBoundary><GraphCanvas items={payload.items} relations={payload.relations} selectedId={selectedId} onSelect={(id) => id ? selectFrom(id) : closeDetail()} visibleIds={visibleIds} localDepth={depth} focusRequest={selectedId ? { id: selectedId, nonce: focusNonce } : null} onStats={setStats} /></GraphBoundary>
         {!filtered.length && <div className="empty empty-overlay"><strong>조건에 맞는 자료가 없습니다.</strong><p>검색어를 지우거나 필터 범위를 넓혀 보세요.</p><button onClick={() => { setQuery(''); setKind('all'); setDomain('all'); }}>필터 초기화</button></div>}
         <div className="graph-legend" aria-label="자료 유형 범례"><span><i className="kind-dot document" />문서</span><span><i className="kind-dot tool" />도구</span><span><i className="kind-dot ai_asset" />AI 자산</span></div>
       </section><section className={`list-pane ${view !== 'list' ? 'view-hidden' : ''}`} aria-label="자료 목록">
         <div className="list-summary"><span><strong>{filtered.length.toLocaleString()}</strong>개 자료</span><span>{page} / {pages} 페이지</span></div>
         {shown.length ? <div className="item-table" role="table" aria-label="자료 목록"><div className="table-header" role="row"><span role="columnheader">자료명</span><span role="columnheader">유형</span><span role="columnheader">업무 분야</span><span role="columnheader">담당</span><span role="columnheader">연결 자료</span><span role="columnheader">업데이트</span><span role="columnheader"><span className="sr-only">그래프 작업</span></span></div>{shown.map((item) => <div role="row" key={item.id} className={`table-row ${item.id === selectedId ? 'selected' : ''}`}>
-          <span role="cell"><button className="row-title" onClick={() => select(item.id)}><span className={`kind-dot ${item.kind}`} /><span><strong>{item.title}</strong><small>{item.description || '설명 미등록'}</small></span></button></span>
+          <span role="cell"><button className="row-title" onClick={(event) => selectFrom(item.id, event.currentTarget)}><span className={`kind-dot ${item.kind}`} /><span><strong>{item.title}</strong><small>{item.description || '설명 미등록'}</small></span></button></span>
           <span className={`kind-text ${item.kind}`} role="cell">{KIND_SHORT[item.kind]}</span><span role="cell" className="cell-secondary">{item.domain || '미분류'}</span><span role="cell" className="cell-secondary">{item.owner || '미등록'}</span><span role="cell" className="connection-count">{relationCount.get(item.id) ?? 0}</span><span role="cell" className="cell-secondary">{item.updatedAt || '—'}</span>
-          <button className="graph-jump" onClick={() => showInGraph(item.id)} aria-label={`${item.title}을 그래프에서 보기`} title="그래프에서 보기"><Icon name="graph" /></button>
+          <span role="cell"><button className="graph-jump" onClick={(event) => showInGraph(item.id, event.currentTarget)} aria-label={`${item.title}을 그래프에서 보기`} title="그래프에서 보기"><Icon name="graph" /></button></span>
         </div>)}</div> : <div className="empty"><strong>조건에 맞는 자료가 없습니다.</strong><button onClick={() => { setQuery(''); setKind('all'); setDomain('all'); }}>필터 초기화</button></div>}
         {pages > 1 && <div className="pagination"><button disabled={page === 1} onClick={() => setPage((value) => value - 1)}>이전</button><span>{(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, filtered.length)}</span><button disabled={page === pages} onClick={() => setPage((value) => value + 1)}>다음</button></div>}
       </section></div>
     </main>
-    {selected && <DetailPanel item={selected} relations={payload.relations} byId={byId} onClose={() => select(null)} onNavigate={select} />}
+    {selected && <DetailPanel item={selected} relations={payload.relations} byId={byId} onClose={closeDetail} onNavigate={navigateRelation} />}
   </div>;
 }
 

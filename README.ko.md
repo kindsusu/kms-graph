@@ -11,9 +11,10 @@ KMS Graph는 문서, 업무 도구, AI 자산을 검색하고 관계 그래프�
 Node.js 22.12 이상(권장)과 Python 3.10 이상이 필요합니다. Node.js 20을 사용한다면 20.19 이상이어야 합니다. 저장소 루트에서 실행합니다.
 
 ```bash
+npm ci
 npm --prefix frontend ci
-npm --prefix frontend run build
-python build.py --csv-dir sample --out out --no-check-urls
+python -m pip install -r requirements.txt
+npm run sample:build
 python -m http.server --directory out 8765
 ```
 
@@ -30,7 +31,9 @@ python -m http.server --directory out 8765
 
 ## 입력과 빌드
 
-시험용 CSV는 `sample/`에 있습니다. 운영 입력은 `config.example.json`을 복사한 `config.json`에서 Google Sheets 또는 Notion 읽기를 설정할 수 있습니다. 계정 자격 증명이 없는 환경에서는 외부 수집을 시험하지 않습니다. `config.json`, 서비스 계정 키와 토큰은 저장소에 커밋하지 마세요.
+시험용 CSV는 `sample/`에 있으며 `npm run sample:build`가 명시적인 데모 빌드입니다. 운영 빌드는 `config.example.json`을 복사한 무시 대상 `config.json`에서 Google Sheets 또는 Notion 읽기를 설정하고, `repo_dir`을 이 저장소의 정확한 절대 경로로, `out_subdir`을 `out`으로 지정한 뒤 `npm run build`를 실행합니다. 운영 명령은 `config.json`이 없으면 실패하며 샘플 데이터로 대체하지 않습니다. 프런트엔드 빌드, `build.py --config config.json --no-push`, 게시 산출물 검증을 순서대로 수행합니다. `config.json`, 서비스 계정 키와 토큰은 저장소에 커밋하지 마세요.
+
+Cloudflare 설정과 검증, dry-run, 배포 절차는 [docs/cloudflare-deployment.ko.md](docs/cloudflare-deployment.ko.md)에 정리되어 있습니다. `npm run deploy:dry-run`은 설정된 출력물을 검증한 뒤 Wrangler dry-run을 실행합니다. `npm run deploy`는 운영 빌드와 검증을 새로 수행한 뒤 게시하므로 로컬 산출물과 계정 대상을 검토한 후 실행합니다.
 
 확장 지식과 명시적 관계는 schemaVersion 2 JSON으로 제공할 수 있습니다.
 
@@ -45,7 +48,8 @@ python build.py --csv-dir sample --knowledge sample/knowledge.json --out out --n
 ```bash
 npm --prefix frontend run typecheck
 npm --prefix frontend test
-npm --prefix frontend run build
+npm test
+npm run frontend:build
 python test_build.py
 python test_knowledge.py
 ```

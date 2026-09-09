@@ -11,9 +11,10 @@ KMS Graph is a read-focused internal knowledge portal for searching and explorin
 Node.js 22.12+ (recommended) and Python 3.10+ are required. If using Node.js 20, use 20.19 or newer. Run from the repository root:
 
 ```bash
+npm ci
 npm --prefix frontend ci
-npm --prefix frontend run build
-python build.py --csv-dir sample --out out --no-check-urls
+python -m pip install -r requirements.txt
+npm run sample:build
 python -m http.server --directory out 8765
 ```
 
@@ -30,7 +31,9 @@ For frontend development, run `npm --prefix frontend run dev`. The dev server us
 
 ## Inputs and builds
 
-Local CSV examples are in `sample/`. For operational input, copy `config.example.json` to the ignored `config.json` and configure read access to Google Sheets or Notion. External collection is not tested without account credentials. Never commit `config.json`, service-account keys, or tokens.
+Local CSV examples are in `sample/`; `npm run sample:build` is the explicit demo build. For an operational build, copy `config.example.json` to the ignored `config.json`, set `repo_dir` to this repository's exact absolute path and `out_subdir` to `out`, then run `npm run build`. The production command requires `config.json`, builds the frontend, runs `build.py --config config.json --no-push`, and validates the resulting static files. It never falls back to sample data. External collection is not tested without account credentials. Never commit `config.json`, service-account keys, or tokens.
+
+Cloudflare setup, validation, dry-run and deployment steps are documented in [docs/cloudflare-deployment.ko.md](docs/cloudflare-deployment.ko.md). `npm run deploy:dry-run` validates the configured output before invoking Wrangler. `npm run deploy` performs a fresh production build and validation before publishing; run it only after reviewing the local output and account target.
 
 Schema version 2 JSON can add richer knowledge items and explicit relationships:
 
@@ -45,7 +48,8 @@ The generated HTML contains all published data. Anyone who can read the static f
 ```bash
 npm --prefix frontend run typecheck
 npm --prefix frontend test
-npm --prefix frontend run build
+npm test
+npm run frontend:build
 python test_build.py
 python test_knowledge.py
 ```

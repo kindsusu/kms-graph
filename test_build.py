@@ -134,6 +134,10 @@ try:
     assert report["pending_mapping"]["count"] == 1, report["pending_mapping"]
     assert report["claude_classified"] == [], report["claude_classified"]
 
+    # Empty sample config must not accidentally merge example knowledge.
+    config_example = json.load(open(os.path.join(HERE, "config.example.json"), encoding="utf-8"))
+    assert not config_example["knowledge_file"], config_example
+
     state_dir = build.state_directory(out_dir, cfg)
     with open(os.path.join(state_dir, "unmatched.json"), encoding="utf-8") as f:
         um = json.load(f)
@@ -171,6 +175,78 @@ try:
     assert "</script><img" not in html, "이스케이프되지 않은 </script> 발견"
 finally:
     shutil.rmtree(tmp, ignore_errors=True)
+
+# An administrator message or report in the publish directory is never overwritten.
+blocked = tempfile.mkdtemp(prefix="kms-blocked-")
+try:
+    open(os.path.join(blocked, "message.md"), "w", encoding="utf-8").write("private")
+    try:
+        build.build(argparse.Namespace(csv_dir=SAMPLE, check_urls=False), {}, blocked)
+    except SystemExit as exc:
+        assert "허용되지 않은" in str(exc)
+    else:
+        raise AssertionError("admin file in public output was accepted")
+finally:
+    shutil.rmtree(blocked, ignore_errors=True)
+
+# A non-static file nested in assets is also not publishable.
+blocked_assets = tempfile.mkdtemp(prefix="kms-blocked-assets-")
+try:
+    os.makedirs(os.path.join(blocked_assets, "assets"))
+    open(os.path.join(blocked_assets, "assets", "message.md"), "w", encoding="utf-8").write("private")
+    try:
+        build.build(argparse.Namespace(csv_dir=SAMPLE, check_urls=False), {}, blocked_assets)
+    except SystemExit as exc:
+        assert "assets에 허용되지 않은" in str(exc)
+    else:
+        raise AssertionError("admin asset file was accepted")
+finally:
+    shutil.rmtree(blocked_assets, ignore_errors=True)
+
+# assets must be a real directory and source maps are not publishable.
+bad_assets = tempfile.mkdtemp(prefix="kms-assets-shape-")
+try:
+    open(os.path.join(bad_assets, "assets"), "w", encoding="utf-8").write("not a directory")
+    try:
+        build.validate_public_contents(bad_assets)
+    except SystemExit as exc:
+        assert "디렉터리" in str(exc)
+    else:
+        raise AssertionError("assets file was accepted")
+finally:
+    shutil.rmtree(bad_assets, ignore_errors=True)
+
+mapped = tempfile.mkdtemp(prefix="kms-source-map-")
+try:
+    os.makedirs(os.path.join(mapped, "assets"))
+    open(os.path.join(mapped, "assets", "app.js.map"), "w", encoding="utf-8").write("{}")
+    try:
+        build.validate_public_contents(mapped)
+    except SystemExit as exc:
+        assert "허용되지 않은" in str(exc)
+    else:
+        raise AssertionError("source map was accepted")
+finally:
+    shutil.rmtree(mapped, ignore_errors=True)
+
+# A publish entry must not escape through a symbolic link (where supported).
+linked = tempfile.mkdtemp(prefix="kms-linked-")
+try:
+    target = os.path.join(linked, "target.txt")
+    open(target, "w", encoding="utf-8").write("private")
+    try:
+        os.symlink(target, os.path.join(linked, "index.html"))
+    except (OSError, NotImplementedError):
+        pass
+    else:
+        try:
+            build.validate_public_contents(linked)
+        except SystemExit as exc:
+            assert "허용되지 않은" in str(exc) or "링크" in str(exc)
+        else:
+            raise AssertionError("linked index accepted")
+finally:
+    shutil.rmtree(linked, ignore_errors=True)
 
 # 예시 매핑 파일이 읽히는 형태인지
 ex = build.load_mappings(os.path.join(SAMPLE, "mappings.example.json"))

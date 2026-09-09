@@ -4,7 +4,7 @@
 사용 예:
   python build.py --csv-dir sample --out out --no-check-urls
   python build.py --config config.json --push
-  python build.py --config config.json --notify out/message.md
+  python build.py --config config.json --notify C:/path/message.md
 """
 import argparse
 import csv
@@ -511,6 +511,37 @@ def atomic_json(path, value):
     os.replace(tmp, path)
 
 
+def validate_public_contents(out_dir):
+    """Fail closed before input/network work; never remove a file we do not own."""
+    is_link = lambda path: os.path.islink(path) or getattr(os.path, "isjunction", lambda _p: False)(path)
+    if not os.path.isdir(out_dir):
+        return
+    unknown = [name for name in os.listdir(out_dir) if name not in {"index.html", "assets", ".nojekyll"}]
+    if unknown:
+        raise SystemExit("게시 폴더에 허용되지 않은 파일이 있습니다 (%s). 새 빈 출력 경로를 사용하거나 먼저 안전하게 이동하세요."
+                         % ", ".join(sorted(unknown)))
+    for name in ("index.html", ".nojekyll"):
+        path = os.path.join(out_dir, name)
+        if os.path.lexists(path) and (is_link(path) or os.path.isdir(path)):
+            raise SystemExit("게시 파일은 링크 또는 디렉터리일 수 없습니다: %s" % name)
+    assets = os.path.join(out_dir, "assets")
+    if os.path.lexists(assets) and is_link(assets):
+        raise SystemExit("assets는 링크일 수 없습니다.")
+    if os.path.lexists(assets) and not os.path.isdir(assets):
+        raise SystemExit("assets는 디렉터리여야 합니다.")
+    if os.path.isdir(assets):
+        for root, dirs, files in os.walk(assets):
+            for name in dirs:
+                if is_link(os.path.join(root, name)):
+                    raise SystemExit("assets에 링크가 허용되지 않습니다: %s" % os.path.relpath(os.path.join(root, name), out_dir))
+            for name in files:
+                path = os.path.join(root, name)
+                if is_link(path):
+                    raise SystemExit("assets에 링크가 허용되지 않습니다: %s" % os.path.relpath(path, out_dir))
+                if not name.lower().endswith((".js", ".mjs", ".css", ".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".woff", ".woff2", ".ttf", ".otf", ".ico")):
+                    raise SystemExit("assets에 허용되지 않은 파일이 있습니다: %s" % os.path.relpath(path, out_dir))
+
+
 def public_template():
     dist = os.path.join(HERE, "frontend", "dist", "index.html")
     return dist if os.path.exists(dist) else os.path.join(HERE, "template.html")
@@ -595,6 +626,7 @@ def mappings_path(cfg):
 def build(args, cfg, out_dir):
     # Validate before source reading or URL checks: no unsafe path gets a side effect.
     out_dir, state_dir = validate_publish_paths(out_dir, cfg)
+    validate_public_contents(out_dir)
     raw = read_source(args, cfg)
     domains = build_domains(raw["domains"])
     datas = build_data(raw["data"])
@@ -605,11 +637,6 @@ def build(args, cfg, out_dir):
     if do_check:
         check_urls(sites)
 
-    # Never silently leave old internal reports in a public directory.
-    legacy_private = [n for n in ("snapshot.json", "report.json", "unmatched.json") if os.path.exists(os.path.join(out_dir, n))]
-    if legacy_private:
-        raise SystemExit("게시 폴더에 기존 내부 파일이 있습니다 (%s). 새 빈 출력 경로를 사용하거나 먼저 안전하게 이동하세요."
-                         % ", ".join(legacy_private))
     os.makedirs(out_dir, exist_ok=True)
     snap_path = os.path.join(state_dir, "snapshot.json")
     old = {}

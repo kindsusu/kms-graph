@@ -1,116 +1,52 @@
 ---
 name: kms-graph
-description: 사내 KMS 페이지(사이트 그래프 + 목록)를 구글 시트나 노션 데이터베이스에서 다시 만들어 GitHub Pages 저장소에 올리고 결과를 Teams로 알린다. "/kms-graph", "KMS 그래프 갱신", "KMS 페이지 만들어", "사내 앱 목록 페이지 갱신" 같은 요청이나 매일 예약 실행에 사용한다.
+description: 승인된 Google Sheets·Notion·CSV 자료를 읽기 전용 Cloudflare 정적 KMS로 빌드한다.
 ---
 
-# kms-graph
+# KMS Graph
 
-직원이 구글 시트나 노션 DB에 등록하고 관리자가 승인한 사내 웹앱을 하나의 정적 페이지(그래프 뷰 + 목록 뷰)로 만든다.
-검증·비교·렌더는 `build.py` 가 전부 결정론적으로 처리한다. Claude 가 판단하는 것은 **3번(분류)** 한 곳뿐이다.
+원본을 읽기만 하며 `out/`에 정적 사이트를 생성한다. 원본의 추가·수정은 Notion 또는 Google Sheets에서 한다.
 
-## 실행 순서
+## 로컬 설정과 의존성
 
-작업 폴더는 이 스킬 폴더다. 명령은 PowerShell 기준이며 `&&` 대신 `;` 를 쓴다.
+`config.example.json`을 복사해 무시되는 `config.json`을 만든다. 비밀 값은 대화에 붙여 넣지 말고 로컬 설정 또는 환경에만 둔다. Sheets는 `sheet_id`, `service_account_json` 경로가 필요하며, Notion은 `notion_token`, `notion_db_sites`와 선택 `notion_db_data`가 필요하다.
 
-0. **첫 실행 설정** — `config.json` 이 없으면 여기부터 한다. 있으면 건너뛴다.
+```powershell
+python -m pip install -r requirements.txt
+npm ci
+npm --prefix frontend ci
+npm --prefix frontend run build
+```
 
-   AskUserQuestion 도구로 아래를 묻는다.
+실제 계정·자격 증명이 없는 경우 외부 수집은 검증됐다고 말하지 않는다.
 
-   - (a) 입력원: `노션 데이터베이스` / `구글시트`
-   - (b) 그 입력원에 필요한 값
-     - 노션: `notion_token` (`secret_...`), `notion_db_sites` (데이터베이스 ID), 선택 `notion_db_data`
-     - 구글시트: `sheet_id`, `service_account_json` (키 파일 **경로**)
-   - (c) `repo_dir`, `page_url`, `teams_webhook`, `check_urls` — 지금 모르면 비워 둔다고 답해도 된다
+## 빌드
 
-   `config.example.json` 을 읽어 `config.json` 을 만들고 받은 값을 채운다. `source` 는 (a)에 따라 `"notion"` 또는 `"sheets"`.
-   다 쓴 뒤 **아직 비어 있는 키를 사용자에게 알려 준다.**
+```powershell
+python build.py --csv-dir sample --out out --no-check-urls
+```
 
-   토큰·키 파일 내용은 대화창에 다시 쓰지 않고 `config.json` 외의 어떤 파일에도 쓰지 않는다.
-   설정이 필요한 자세한 절차는 `README.md` 를 안내한다.
+운영 원본은 `npm run build`로 생성한다. 이 명령이 프런트엔드 빌드, `python build.py --config config.json --no-push`, 게시 산출물 검증을 순서대로 실행한다. 기존 CSV의 프롬프트 열은 공개 payload에 내보내지 않는다. 명시적인 AI 프롬프트 자산은 `--knowledge` 또는 `knowledge_file`로 명시한 schema v2 JSON만 병합한다.
 
-1. **빌드**
+내부 보고·스냅샷·미분류 목록은 게시 폴더 밖의 상태 디렉터리에 생성된다. 게시 `out/`에는 `index.html`, `assets/`, 선택 `.nojekyll`만 둘 수 있다. `message.md` 같은 관리 파일이 있으면 빌드는 삭제 없이 실패한다.
 
-   ```
-   python build.py --config config.json --push
-   ```
+## Cloudflare 정적 배포
 
-   입력원을 그때만 바꾸려면 `--source notion` 또는 `--source sheets` 를 붙인다.
-   시험 삼아 돌릴 때(시트/노션/저장소를 건드리지 않음):
+`npm run deploy:dry-run`으로 산출물 구성을 확인한다. 실제 원격 배포는 명시적인 사용자 승인이 있을 때에만 `npm run deploy`로 실행한다. 이 스킬은 로그인, 원격 리소스 생성, Git push, Teams 알림을 수행하지 않는다.
 
-   ```
-   python build.py --csv-dir sample --out out --no-push --no-check-urls
-   ```
+원본 변경은 자동 반영되지 않는다. 원본 편집 후 다시 빌드하고 다시 배포한다. 상세 절차는 `docs/cloudflare-deployment.ko.md`를 따른다.
 
-2. **분류 대기 처리** — 출력 폴더의 `unmatched.json` 을 읽는다. 세 목록(`도메인`, `참조데이터`, `사이트도메인`)이
-   모두 비어 있으면 이 단계를 건너뛴다. 비어 있지 않으면 같은 파일의 `masters` 를 함께 읽고 항목마다 판단한다.
+## 검증
 
-   - **뜻이 같은 데이터 원본이나 업무 영역이 마스터에 이미 있으면 그것을 고른다** → `{"to": "<마스터 이름>"}`
-   - 맞는 것이 정말 없을 때만 새로 만든다 → `{"new": {...}}`
-     (도메인 `new` = `{"도메인명","설명","색상"}`, 참조데이터 `new` = `{"데이터명","종류","담당팀","설명"}`)
-   - `사이트도메인` 항목은 그 사이트의 `소개` 를 읽고 마스터 도메인 중 하나를 고른다
-   - 확신이 안 서면 기존 항목에 억지로 붙이지 말고 `new` 를 고르고, 확신이 없다고 메시지에 적는다
+```powershell
+python test_build.py
+python test_knowledge.py
+npm --prefix frontend run typecheck
+npm --prefix frontend test
+```
 
-   결정을 `mappings.json` (없으면 새로 만든다)에 넣는다. 항목마다 한 줄짜리 `why` 와 `"by": "claude"`, 오늘 `date` 를 적는다.
+## 금지
 
-   ```json
-   {"참조데이터": {"인사규정 노션": {"to": "그룹웨어 사규 PDF", "why": "같은 사규 원문의 노션 사본",
-                                "by": "claude", "date": "2026-09-02"}}}
-   ```
-
-   형식 예시는 `sample/mappings.example.json`. 다 쓴 뒤 **1번을 다시 실행한다.**
-   그래도 `unmatched.json` 이 남으면(오타나 판단 불가) 그대로 두고 3번 메시지에 적는다.
-
-   **금지**: 마스터 항목의 이름을 바꾸지 않는다. 서로 다른 데이터 원본을 하나로 합치지 않는다.
-   `mappings.json` 의 기존 항목을 지우거나 고치지 않는다 — 관리자가 손댄 결정일 수 있다.
-
-3. **결과 읽기** — `report.json` 을 읽고 관리자용 한국어 메시지를 `out/message.md` 에 쓴다. 15줄 이내로, 아래를 담는다.
-
-   - 신규 / 변경 / 삭제 사이트 (이름 나열, 변경은 바뀐 항목 이름까지)
-   - 승인 대기: 건수와 사이트명
-   - 검증 오류: 행 번호와 이유 (그대로 옮긴다. 임의로 고치거나 빼지 않는다)
-   - **오늘 Claude 가 분류한 것 전부** — `claude_classified` 의 `원본 → 결과` 와 `why` 를 한 줄씩.
-     "다르면 `mappings.json` 을 고치거나 시트/노션 값을 고쳐 주세요" 라는 안내를 함께 적는다
-   - 아직 남은 분류 대기(`pending_mapping`): 건수와 사이트명
-   - 접속 불가 사이트: 사이트명과 상태
-   - 페이지 주소 (`page_url`)
-
-   변경도 없고 대기·오류·분류·접속 불가도 없으면 두 줄로만 쓴다.
-   예: `오늘 KMS 페이지에 변경 사항이 없습니다.` / `사이트 12개, 승인 대기 0건, 오류 0건.`
-
-4. **알림 전송**
-
-   ```
-   python build.py --config config.json --notify out/message.md
-   ```
-
-   출력된 HTTP 상태가 200 계열인지 확인한다.
-
-5. **실패했을 때** — 트레이스백을 읽고 원인을 한국어 한두 문장으로 정리해
-   `out/message.md` 에 쓴 뒤 4번 명령으로 보낸다. 흔한 원인은 다음과 같다.
-
-   - 서비스 계정 인증 실패 / 시트 공유 안 됨 → 시트를 서비스 계정 이메일에 뷰어로 공유했는지
-   - 노션 401·404 → 통합(integration)에 데이터베이스를 공유했는지, `notion_token` / DB ID 가 맞는지
-   - 탭 이름이나 헤더, 노션 속성 이름이 바뀜 → `사이트`, `도메인`, `참조데이터` 와 1행 헤더 확인
-   - `git push` 실패 → 자격 증명 또는 원격 저장소 상태
-   - Teams 웹훅 4xx → `teams_webhook` 값 또는 Power Automate 흐름 상태
-
-   실패를 성공처럼 보고하지 않는다. 알림도 못 보내면 그 사실을 사용자에게 알린다.
-
-## 하지 말 것
-
-- 구글 시트나 노션 DB를 고치지 않는다. 오류가 있는 행도 지우거나 승인하지 않는다. 보고만 한다.
-- 검증 오류를 무시하거나 요약에서 빼지 않는다.
-- Claude 분류를 메시지에서 빼지 않는다. 관리자가 되돌릴 수 있어야 한다.
-- `repo_dir` 안에서 `out_subdir` 밖의 파일을 건드리지 않는다. 커밋 대상은 출력 폴더뿐이다.
-- `build.py` 가 만든 숫자를 추정으로 바꿔 쓰지 않는다. 메시지의 수치는 `report.json` 값 그대로 쓴다.
-- 그래프 배치나 사이트 설명을 LLM 판단으로 다시 쓰지 않는다. 시트/노션 내용이 원본이다.
-- 토큰·서비스 계정 키 내용을 대화창이나 `config.json` 외의 파일에 쓰지 않는다.
-
-## 파일
-
-- `build.py` — 읽기(시트/노션/CSV), 매핑 적용, 검증, 접속 확인, 스냅샷 비교, 렌더, 푸시, 알림
-- `template.html` — 페이지 원본. `/*__KMS_DATA__*/` 자리에 JSON이 들어간다
-- `config.example.json` — `config.json` 으로 복사해서 채운다
-- `mappings.json` — 2번에서 쌓이는 분류 결정. 지우지 않는다 (없으면 새로 만들어진다)
-- `sample/` — 시험용 CSV 3개, `mappings.example.json`
-- `README.md` — 시트·노션·서비스 계정·GitHub Pages·Teams·예약 실행 설정 방법
+- Sheets·Notion 원본, 승인 상태, mappings를 임의로 변경하지 않는다.
+- 공개 `out/` 외부의 파일을 게시 대상으로 추가하지 않는다.
+- 토큰, 서비스 계정 키, 내부 상태 보고서를 출력하거나 게시하지 않는다.
