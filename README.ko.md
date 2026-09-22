@@ -58,6 +58,8 @@ python test_knowledge.py
 
 Cloudflare에 게시된 포털은 읽기 전용입니다. 자료 추가·수정·삭제는 연결된 Notion 또는 Google Sheets 원본에서 수행하고, 다음 정적 사이트 빌드 때 반영합니다.
 
+개인별 폴더·프로젝트·자료 소속 정리는 브라우저에만 저장되며 원본이나 다른 사용자 화면을 바꾸지 않습니다. 사용법과 백업·복구 범위는 [docs/library-organization.ko.md](docs/library-organization.ko.md)를 참고하세요.
+
 ## 주요 파일
 
 | 경로 | 역할 |

@@ -2,11 +2,14 @@ import { Component, type ErrorInfo, type ReactNode, useEffect, useMemo, useRef, 
 import GraphCanvas from './graph/GraphCanvas';
 import { isSafeExternalUrl, loadPayload } from './data';
 import { writeSelectionHistory } from './navigation';
+import { presentRelation, relationSummary } from './relationPresentation';
 import type { GraphStats, ItemKind, KnowledgeItem, KnowledgePayload, KnowledgeRelation } from './model';
+import OrganizationPanel, { FolderProjectList, type OrganizationActions, type Scope as OrganizationScope } from './organization/OrganizationPanel';
+import { emptyOrganization, libraryStorageKey, loadOrganization, parseOrganization, persistOrganization, reduceOrganization, serializeOrganization, type OrganizationAction, type OrganizationState } from './organization/store';
 
 type View = 'graph' | 'list';
 type Theme = 'light' | 'dark';
-type Sort = 'name' | 'updated' | 'connections';
+type Sort = 'manual' | 'name' | 'updated' | 'connections';
 const PAGE_SIZE = 24;
 const KIND_LABEL: Record<ItemKind, string> = { document: '지식·문서', tool: '업무 도구', ai_asset: 'AI 자산' };
 const KIND_SHORT: Record<ItemKind, string> = { document: '문서', tool: '도구', ai_asset: 'AI' };
@@ -62,6 +65,7 @@ function DetailPanel({ item, relations, byId, onClose, onNavigate }: {
   onClose: () => void; onNavigate: (id: string) => void;
 }) {
   const related = relations.filter((relation) => relation.source === item.id || relation.target === item.id);
+  const relationTotals = relationSummary(related, item.id);
   const closeRef = useRef<HTMLButtonElement>(null);
   useEffect(() => { closeRef.current?.focus(); }, [item.id]);
   return <aside className="detail-panel" aria-labelledby="detail-title">
@@ -76,11 +80,13 @@ function DetailPanel({ item, relations, byId, onClose, onNavigate }: {
     {item.body && <section><h3>내용</h3><p className="body-copy">{item.body}</p></section>}
     {item.kind === 'ai_asset' && item.subtype === '프롬프트' && item.prompt && <section><h3>프롬프트</h3><pre className="prompt">{item.prompt}</pre></section>}
     {isSafeExternalUrl(item.url) && <a className="primary-link" href={item.url} target="_blank" rel="noopener noreferrer">원본 열기 <Icon name="external" /></a>}
-    <section><h3>연결된 자료 <span>{related.length}</span></h3>
+    <section><h3>연결된 자료 <span>{relationTotals.neighborCount}개</span></h3>
+      {related.length > 0 && <p className="relation-summary">자료 {relationTotals.neighborCount}개 · 관계 {relationTotals.edgeCount}개</p>}
       {related.length ? <ul className="relations">{related.map((relation) => {
         const outgoing = relation.source === item.id;
         const other = byId.get(outgoing ? relation.target : relation.source);
-        return other && <li key={relation.id}><button onClick={() => onNavigate(other.id)}><span className="relation-direction">{outgoing ? '→' : '←'} {relation.label}</span><strong>{other.title}</strong></button></li>;
+        const presentation = presentRelation(relation, item.id);
+        return other && <li key={relation.id}><button onClick={() => onNavigate(other.id)}><span className={`relation-direction ${presentation.direction}`}>{presentation.directionText} · {presentation.label}</span><strong>{other.title}</strong></button></li>;
       })}</ul> : <p className="muted">표시할 관계가 없습니다.</p>}
     </section>
   </aside>;
@@ -100,6 +106,18 @@ function Workspace({ payload }: { payload: KnowledgePayload }) {
   const [focusNonce, setFocusNonce] = useState(0);
   const [stats, setStats] = useState<GraphStats>({ visibleNodes: payload.items.length, visibleEdges: payload.relations.length, layoutRunning: true });
   const [theme, setTheme] = useState<Theme>(() => { try { return localStorage.getItem('kms-theme') === 'dark' ? 'dark' : 'light'; } catch { return 'light'; } });
+  const libraryKey = useMemo(() => libraryStorageKey(payload.isDemo ? 'demo' : 'production'), [payload.isDemo]);
+  const [organization, setOrganization] = useState<OrganizationState>(() => emptyOrganization(libraryKey));
+  const [organizationScope, setOrganizationScope] = useState<OrganizationScope>(null);
+  const [organizationOpen, setOrganizationOpen] = useState(false);
+  const [organizationNotice, setOrganizationNotice] = useState<string | null>(null);
+  const [organizationUndo, setOrganizationUndo] = useState<OrganizationState | null>(null);
+  const [organizationRaw, setOrganizationRaw] = useState<string | null>(null);
+  const [corruptOrganizationRaw, setCorruptOrganizationRaw] = useState<string | null>(null);
+  const [selectedItemIds, setSelectedItemIds] = useState<Set<string>>(() => new Set());
+  const [pendingImport, setPendingImport] = useState<OrganizationState | null>(null);
+  const importCloseRef = useRef<HTMLButtonElement>(null);
+  const importReturnRef = useRef<HTMLElement | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const selectionTriggerRef = useRef<HTMLElement | null>(null);
   const domains = useMemo(() => [...new Set(payload.items.map((item) => item.domain))].sort((a, b) => a.localeCompare(b, 'ko')), [payload.items]);
@@ -110,38 +128,82 @@ function Workspace({ payload }: { payload: KnowledgePayload }) {
   }, [payload.items, payload.relations]);
 
   useEffect(() => { document.documentElement.dataset.theme = theme; try { localStorage.setItem('kms-theme', theme); } catch { /* Storage can be disabled by policy. */ } }, [theme]);
+  useEffect(() => {
+    try { const loaded = loadOrganization(localStorage, libraryKey); setOrganization(loaded.state); setOrganizationRaw(loaded.raw); setCorruptOrganizationRaw(loaded.error ? loaded.raw : null); if (loaded.error) setOrganizationNotice('저장된 내 정리를 열 수 없습니다. 원본 내보내기 또는 검증된 가져오기로 복구하세요.'); }
+    catch { setOrganization(emptyOrganization(libraryKey)); setOrganizationRaw(null); setOrganizationNotice('브라우저 저장소를 사용할 수 없습니다.'); }
+  }, [libraryKey]);
   useEffect(() => setPage(1), [query, kind, domain, sort]);
+  useEffect(() => setSelectedItemIds(new Set()), [query, kind, domain, page, organizationScope]);
+  useEffect(() => { if (pendingImport) importCloseRef.current?.focus(); }, [pendingImport]);
   useEffect(() => {
     const keyboard = (event: KeyboardEvent) => {
+      if ((event.target as HTMLElement | null)?.closest('[role="dialog"]')) return;
       if (event.key === '/' && document.activeElement?.tagName !== 'INPUT' && document.activeElement?.tagName !== 'TEXTAREA') { event.preventDefault(); searchRef.current?.focus(); }
       if (event.key === 'Escape' && query) { setQuery(''); searchRef.current?.focus(); }
     };
     addEventListener('keydown', keyboard); return () => removeEventListener('keydown', keyboard);
   }, [query]);
 
+  const scopedItemIds = useMemo(() => organizationScope?.type === 'project' ? new Set(organization.memberships.filter((membership) => membership.projectId === organizationScope.id).map((membership) => membership.itemId)) : null, [organizationScope, organization.memberships]);
   const filtered = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase('ko');
     return payload.items.filter((item) => {
+      if (scopedItemIds && !scopedItemIds.has(item.id)) return false;
       if (kind !== 'all' && item.kind !== kind) return false;
       if (domain !== 'all' && item.domain !== domain) return false;
       if (!needle) return true;
       return [item.title, item.description, item.body, item.prompt, item.owner, ...item.tags].filter(Boolean).join('\n').toLocaleLowerCase('ko').includes(needle);
     }).sort((a, b) => {
+      if (organizationScope?.type === 'project' && sort === 'manual') return (organization.memberships.find((membership) => membership.projectId === organizationScope.id && membership.itemId === a.id)?.order ?? 0) - (organization.memberships.find((membership) => membership.projectId === organizationScope.id && membership.itemId === b.id)?.order ?? 0);
       if (sort === 'connections') return (relationCount.get(b.id) ?? 0) - (relationCount.get(a.id) ?? 0) || a.title.localeCompare(b.title, 'ko');
       if (sort === 'updated') return (b.updatedAt ?? '').localeCompare(a.updatedAt ?? '') || a.title.localeCompare(b.title, 'ko');
       return a.title.localeCompare(b.title, 'ko');
     });
-  }, [payload.items, query, kind, domain, sort, relationCount]);
+  }, [payload.items, query, kind, domain, sort, relationCount, scopedItemIds, organization.memberships, organizationScope]);
   const visibleIds = useMemo(() => new Set(filtered.map((item) => item.id)), [filtered]);
   const selected = selectedId ? byId.get(selectedId) ?? null : null;
   const pages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const shown = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
   useEffect(() => { if (selectedId && !visibleIds.has(selectedId)) { select(null, true); setDepth(0); } }, [selectedId, visibleIds]);
-  const chooseKind = (next: ItemKind | 'all') => { setKind(next); setView('list'); };
+  const chooseKind = (next: ItemKind | 'all') => { setOrganizationScope(null); setSort('name'); setKind(next); setView('list'); };
   const selectFrom = (id: string, trigger?: HTMLElement | null) => { selectionTriggerRef.current = trigger ?? document.activeElement as HTMLElement | null; select(id); };
   const closeDetail = () => { const trigger = selectionTriggerRef.current; select(null); requestAnimationFrame(() => trigger?.isConnected && trigger.focus()); };
-  const navigateRelation = (id: string) => { setQuery(''); setKind('all'); setDomain('all'); select(id); };
-  const showInGraph = (id: string, trigger?: HTMLElement | null) => { selectionTriggerRef.current = trigger ?? document.activeElement as HTMLElement | null; select(id); setView('graph'); setFocusNonce((value) => value + 1); };
+  const navigateRelation = (id: string) => { setQuery(''); setKind('all'); setDomain('all'); setOrganizationScope(null); select(id); };
+  const openGraph = () => { setView('graph'); if (selectedId) setDepth(1); };
+  const showInGraph = (id: string, trigger?: HTMLElement | null) => { selectionTriggerRef.current = trigger ?? document.activeElement as HTMLElement | null; select(id); setView('graph'); setDepth(1); setFocusNonce((value) => value + 1); };
+  const applyOrganization = (action: OrganizationAction | OrganizationAction[]) => {
+    try {
+      if (corruptOrganizationRaw !== null) throw new Error('손상된 기존 내 정리를 덮어쓸 수 없습니다. 원본을 내보내거나 검증된 파일을 가져오세요.');
+      const actions = Array.isArray(action) ? action : [action];
+      const next = actions.reduce(reduceOrganization, organization);
+      const raw = persistOrganization(localStorage, next, { expectedRaw: organizationRaw });
+      setOrganizationRaw(raw);
+      setOrganizationUndo(organization); setOrganization(next); setOrganizationNotice('내 정리에 저장했습니다.');
+    } catch (error) { setOrganizationNotice(error instanceof Error ? error.message : '내 정리를 저장하지 못했습니다.'); }
+  };
+  const organizationActions: OrganizationActions = {
+    createFolder: (name) => applyOrganization({ type: 'folder/create', id: crypto.randomUUID(), name }), renameFolder: (id, name) => applyOrganization({ type: 'folder/rename', id, name }), deleteFolder: (id) => applyOrganization({ type: 'folder/delete', id }),
+    createProject: (name, folderId) => applyOrganization({ type: 'project/create', id: crypto.randomUUID(), name, folderId }), renameProject: (id, name) => applyOrganization({ type: 'project/rename', id, name }), deleteProject: (id) => applyOrganization({ type: 'project/delete', id }),
+    moveProject: (id, folderId, beforeId) => applyOrganization({ type: 'project/move', id, folderId, beforeId }), moveFolder: (id, beforeId) => applyOrganization({ type: 'folder/move', id, beforeId }),
+    exportJson: () => { const blob = new Blob([corruptOrganizationRaw ?? serializeOrganization(organization)], { type: 'application/json' }); const anchor = document.createElement('a'); anchor.href = URL.createObjectURL(blob); anchor.download = corruptOrganizationRaw ? 'kms-library-organization-recovery.json' : 'kms-library-organization.json'; anchor.click(); URL.revokeObjectURL(anchor.href); },
+    importJson: (file) => { if (file.size > 2_000_000) { setOrganizationNotice('가져오기 파일은 2MB 이하여야 합니다.'); return; } importReturnRef.current = document.activeElement as HTMLElement | null; const reader = new FileReader(); reader.onerror = () => setOrganizationNotice('가져오기 파일을 읽지 못했습니다.'); reader.onload = () => { try { setPendingImport(parseOrganization(JSON.parse(String(reader.result)), libraryKey)); } catch (error) { setOrganizationNotice(error instanceof Error ? error.message : '가져오기 파일이 올바르지 않습니다.'); } }; reader.readAsText(file); },
+    moveItemToProject: (itemId, projectId) => applyOrganization(organizationScope?.type === 'project' ? { type: 'item/move', fromProjectId: organizationScope.id, toProjectId: projectId, itemId } : { type: 'item/link', projectId, itemId }),
+  };
+  const organizationCounts = useMemo(() => new Map(organization.projects.map((project) => [project.id, organization.memberships.filter((membership) => membership.projectId === project.id && byId.has(membership.itemId)).length])), [organization, byId]);
+  const missingScopedItems = useMemo(() => organizationScope?.type === 'project' ? organization.memberships.filter((membership) => membership.projectId === organizationScope.id && !byId.has(membership.itemId)).length : 0, [organizationScope, organization.memberships, byId]);
+  useEffect(() => { if (organizationScope?.type === 'project' && !organization.projects.some((project) => project.id === organizationScope.id)) { setOrganizationScope(null); setPage(1); } if (organizationScope?.type === 'folder' && !organization.folders.some((folder) => folder.id === organizationScope.id)) { setOrganizationScope(null); setPage(1); } }, [organization, organizationScope]);
+  const chooseOrganizationScope = (scope: OrganizationScope) => { setOrganizationScope(scope); setSort(scope?.type === 'project' ? 'manual' : 'name'); setOrganizationOpen(() => typeof matchMedia === 'function' ? !matchMedia('(max-width: 900px)').matches : true); setView('list'); setPage(1); setQuery(''); setKind('all'); setDomain('all'); };
+  const changeMembership = (itemId: string, projectId: string) => organizationActions.moveItemToProject?.(itemId, projectId);
+  const canManualReorder = organizationScope?.type === 'project' && sort === 'manual' && !query && kind === 'all' && domain === 'all';
+  const moveWithinProject = (itemId: string, direction: 'start' | 'up' | 'down' | 'end') => {
+    if (organizationScope?.type !== 'project' || !canManualReorder) return;
+    const index = filtered.findIndex((item) => item.id === itemId);
+    const before = direction === 'start' ? filtered[0]?.id : direction === 'up' ? filtered[index - 1]?.id : direction === 'down' ? filtered[index + 2]?.id : undefined;
+    if ((direction === 'start' && index === 0) || (direction === 'end' && index === filtered.length - 1) || (direction === 'up' && index <= 0) || (direction === 'down' && (index < 0 || index === filtered.length - 1))) return;
+    applyOrganization({ type: 'item/reorder', projectId: organizationScope.id, itemId, beforeItemId: before === itemId ? undefined : before });
+  };
+  const graphOutsideCount = useMemo(() => organizationScope?.type === 'project' ? payload.relations.filter((relation) => scopedItemIds?.has(relation.source) !== scopedItemIds?.has(relation.target)).length : 0, [organizationScope, payload.relations, scopedItemIds]);
+  const scopedRelationCount = useMemo(() => payload.relations.filter((relation) => visibleIds.has(relation.source) && visibleIds.has(relation.target)).length, [payload.relations, visibleIds]);
 
   return <div className={`app-shell ${selected ? 'has-detail' : ''}`}>
     <header className="topbar"><button className="brand" onClick={() => chooseKind('all')}><span className="brand-mark">K</span><span>{payload.title}</span></button>
@@ -150,19 +212,20 @@ function Workspace({ payload }: { payload: KnowledgePayload }) {
     </header>
     <nav className="sidebar" aria-label="자료 유형">
       <p className="nav-label">라이브러리</p>
-      <button className={kind === 'all' && view === 'list' ? 'active' : ''} onClick={() => chooseKind('all')} aria-current={kind === 'all' && view === 'list' ? 'page' : undefined}><span><Icon name="library" /></span>모든 자료<small>{payload.items.length}</small></button>
+      <button className={organizationScope === null && kind === 'all' && view === 'list' ? 'active' : ''} onClick={() => chooseKind('all')} aria-current={organizationScope === null && kind === 'all' && view === 'list' ? 'page' : undefined}><span><Icon name="library" /></span>모든 자료<small>{payload.items.length}</small></button>
       {(Object.keys(KIND_LABEL) as ItemKind[]).map((value) => <button key={value} className={kind === value ? 'active' : ''} onClick={() => chooseKind(value)} aria-current={kind === value ? 'page' : undefined}><span><Icon name={value === 'document' ? 'document' : value === 'tool' ? 'tool' : 'sparkles'} /></span>{KIND_LABEL[value]}<small>{payload.items.filter((item) => item.kind === value).length}</small></button>)}
       <div className="nav-separator" /><p className="nav-label">탐색</p>
-      <button className={view === 'graph' ? 'active' : ''} onClick={() => setView('graph')} aria-current={view === 'graph' ? 'page' : undefined}><span><Icon name="graph" /></span>연결 그래프</button>
+      <button className={view === 'graph' ? 'active' : ''} onClick={openGraph} aria-current={view === 'graph' ? 'page' : undefined}><span><Icon name="graph" /></span>연결 그래프</button>
+      <OrganizationPanel folders={organization.folders} projects={organization.projects} counts={organizationCounts} scope={organizationScope} onScope={chooseOrganizationScope} actions={organizationActions} open={organizationOpen} onOpen={() => setOrganizationOpen(true)} onClose={() => setOrganizationOpen(false)} />
     </nav>
     <main className="workspace">
-      <div className="workspace-head"><div><p className="eyebrow">KNOWLEDGE LIBRARY</p><h1>{view === 'graph' ? '연결 그래프' : kind === 'all' ? '모든 자료' : KIND_LABEL[kind]}</h1><p className="workspace-summary">{filtered.length.toLocaleString()}개 자료 · {payload.relations.length.toLocaleString()}개 연결</p></div>
-        <div className="view-toggle" aria-label="보기 방식"><button className={view === 'graph' ? 'active' : ''} onClick={() => setView('graph')}>그래프</button><button className={view === 'list' ? 'active' : ''} onClick={() => setView('list')}>목록</button></div>
+      <div className="workspace-head"><div><p className="eyebrow">KNOWLEDGE LIBRARY</p><h1>{view === 'graph' ? '연결 그래프' : organizationScope?.type === 'project' ? organization.projects.find((project) => project.id === organizationScope.id)?.name ?? '프로젝트' : organizationScope?.type === 'folder' ? organization.folders.find((folder) => folder.id === organizationScope.id)?.name ?? '폴더' : kind === 'all' ? '모든 자료' : KIND_LABEL[kind]}</h1><p className="workspace-summary">{filtered.length.toLocaleString()}개 자료 · {scopedRelationCount.toLocaleString()}개 연결</p></div>
+        <div className="view-toggle" aria-label="보기 방식"><button className={view === 'graph' ? 'active' : ''} onClick={openGraph}>그래프</button><button className={view === 'list' ? 'active' : ''} onClick={() => setView('list')}>목록</button></div>
       </div>
-      <div className="filterbar"><label className="search"><span><Icon name="search" /></span><input ref={searchRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="제목, 내용, 담당자, 태그 검색" aria-label="자료 검색" />{query && <button onClick={() => setQuery('')} aria-label="검색어 지우기"><Icon name="close" /></button>}<kbd>/</kbd></label>
+      {organizationScope?.type === 'folder' ? <FolderProjectList folder={organization.folders.find((folder) => folder.id === organizationScope.id)!} projects={organization.projects} counts={organizationCounts} onScope={chooseOrganizationScope} /> : <><div className="org-project-breadcrumb">{organizationScope?.type === 'project' && <>내 정리 <span>›</span> {organization.projects.find((project) => project.id === organizationScope.id)?.folderId ? organization.folders.find((folder) => folder.id === organization.projects.find((project) => project.id === organizationScope.id)?.folderId)?.name : '미분류 프로젝트'} <span>›</span> {organization.projects.find((project) => project.id === organizationScope.id)?.name}</>}</div><div className="filterbar"><label className="search"><span><Icon name="search" /></span><input ref={searchRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="제목, 내용, 담당자, 태그 검색" aria-label="자료 검색" />{query && <button onClick={() => setQuery('')} aria-label="검색어 지우기"><Icon name="close" /></button>}<kbd>/</kbd></label>
         <select value={kind} onChange={(event) => setKind(event.target.value as ItemKind | 'all')} aria-label="자료 유형"><option value="all">모든 유형</option>{(Object.keys(KIND_LABEL) as ItemKind[]).map((value) => <option key={value} value={value}>{KIND_LABEL[value]}</option>)}</select>
         <select value={domain} onChange={(event) => setDomain(event.target.value)} aria-label="업무 분야"><option value="all">모든 업무 분야</option>{domains.map((value) => <option key={value} value={value}>{value || '미분류'}</option>)}</select>
-        <select value={sort} onChange={(event) => setSort(event.target.value as Sort)} aria-label="정렬"><option value="name">이름순</option><option value="updated">최신순</option><option value="connections">연결 많은 순</option></select>
+        <select value={sort} onChange={(event) => setSort(event.target.value as Sort)} aria-label="정렬">{organizationScope?.type === 'project' && <option value="manual">수동 순서</option>}<option value="name">이름순</option><option value="updated">최신순</option><option value="connections">연결 많은 순</option></select>
       </div>
       <div className="content-stack"><section className={`graph-pane ${view !== 'graph' ? 'view-hidden' : ''}`} aria-label="연결 그래프">
         <div className="graph-toolbar"><span><strong>{stats.visibleNodes.toLocaleString()}</strong>개 자료 · <strong>{stats.visibleEdges.toLocaleString()}</strong>개 연결 {stats.layoutRunning && <i>배치 중</i>}</span>
@@ -170,17 +233,21 @@ function Workspace({ payload }: { payload: KnowledgePayload }) {
         </div>
         <GraphBoundary><GraphCanvas items={payload.items} relations={payload.relations} selectedId={selectedId} onSelect={(id) => id ? selectFrom(id) : closeDetail()} visibleIds={visibleIds} localDepth={depth} focusRequest={selectedId ? { id: selectedId, nonce: focusNonce } : null} onStats={setStats} /></GraphBoundary>
         {!filtered.length && <div className="empty empty-overlay"><strong>조건에 맞는 자료가 없습니다.</strong><p>검색어를 지우거나 필터 범위를 넓혀 보세요.</p><button onClick={() => { setQuery(''); setKind('all'); setDomain('all'); }}>필터 초기화</button></div>}
-        <div className="graph-legend" aria-label="자료 유형 범례"><span><i className="kind-dot document" />문서</span><span><i className="kind-dot tool" />도구</span><span><i className="kind-dot ai_asset" />AI 자산</span></div>
+        {graphOutsideCount > 0 && <button className="org-graph-outside" onClick={() => { setOrganizationScope(null); setView('graph'); }}>범위 밖 연결 {graphOutsideCount}개 · 전체 그래프</button>}<div className="graph-legend" aria-label="자료 유형 범례"><span><i className="kind-dot document" />문서</span><span><i className="kind-dot tool" />도구</span><span><i className="kind-dot ai_asset" />AI 자산</span></div>
       </section><section className={`list-pane ${view !== 'list' ? 'view-hidden' : ''}`} aria-label="자료 목록">
         <div className="list-summary"><span><strong>{filtered.length.toLocaleString()}</strong>개 자료</span><span>{page} / {pages} 페이지</span></div>
-        {shown.length ? <div className="item-table" role="table" aria-label="자료 목록"><div className="table-header" role="row"><span role="columnheader">자료명</span><span role="columnheader">유형</span><span role="columnheader">업무 분야</span><span role="columnheader">담당</span><span role="columnheader">연결 자료</span><span role="columnheader">업데이트</span><span role="columnheader"><span className="sr-only">그래프 작업</span></span></div>{shown.map((item) => <div role="row" key={item.id} className={`table-row ${item.id === selectedId ? 'selected' : ''}`}>
-          <span role="cell"><button className="row-title" onClick={(event) => selectFrom(item.id, event.currentTarget)}><span className={`kind-dot ${item.kind}`} /><span><strong>{item.title}</strong><small>{item.description || '설명 미등록'}</small></span></button></span>
+        {missingScopedItems > 0 && <p className="org-missing-notice">원본에서 사라진 자료 소속 {missingScopedItems}개는 보존되어 있으며, ID가 돌아오면 다시 표시됩니다.</p>}
+        {shown.length ? <div className="item-table" role="table" aria-label="자료 목록"><div className="table-header" role="row"><span role="columnheader">자료명</span><span role="columnheader">유형</span><span role="columnheader">업무 분야</span><span role="columnheader">담당</span><span role="columnheader">연결 자료</span><span role="columnheader">업데이트</span><span role="columnheader"><span className="sr-only">그래프 작업</span></span></div>{shown.map((item) => <div role="row" key={item.id} onDragOver={(event) => { if (canManualReorder) event.preventDefault(); }} onDrop={(event) => { const source = event.dataTransfer.getData('text/kms-item-id'); if (canManualReorder && source && source !== item.id) applyOrganization({ type: 'item/reorder', projectId: organizationScope!.id, itemId: source, beforeItemId: item.id }); }} className={`table-row ${item.id === selectedId ? 'selected' : ''}`}>
+          <span role="cell"><div className="org-item-controls"><button draggable className="item-drag-handle" onDragStart={(event) => event.dataTransfer.setData('text/kms-item-id', item.id)} aria-label={`${item.title} 프로젝트로 ${organizationScope?.type === 'project' ? '이동' : '연결'}`}>⠿</button><input type="checkbox" aria-label={`${item.title} 선택`} checked={selectedItemIds.has(item.id)} onChange={(event) => setSelectedItemIds((previous) => { const next = new Set(previous); event.target.checked ? next.add(item.id) : next.delete(item.id); return next; })} /><button className="row-title" onClick={(event) => selectFrom(item.id, event.currentTarget)}><span className={`kind-dot ${item.kind}`} /><span><strong>{item.title}</strong><small>{item.description || '설명 미등록'}</small></span></button>{organizationScope?.type === 'project' && <select disabled={!canManualReorder} className="item-project-menu" aria-label={`${item.title} 순서 변경`} value="" onChange={(event) => { const direction = event.target.value as 'start' | 'up' | 'down' | 'end'; if (direction) moveWithinProject(item.id, direction); }}><option value="">순서</option><option value="start">맨 위</option><option value="up">위로</option><option value="down">아래로</option><option value="end">맨 아래</option></select>}{organization.projects.length > 0 && <select className="item-project-menu" aria-label={`${item.title} 프로젝트 메뉴`} value="" onChange={(event) => { const divider = event.target.value.indexOf(':'); const mode = event.target.value.slice(0, divider); const projectId = event.target.value.slice(divider + 1); if (projectId) mode === 'link' ? applyOrganization({ type: 'item/link', projectId, itemId: item.id }) : changeMembership(item.id, projectId); }}><option value="">···</option>{organization.projects.filter((project) => project.id !== organizationScope?.id).flatMap((project) => [<option key={`move-${project.id}`} value={`move:${project.id}`}>{project.name}{organizationScope?.type === 'project' ? '로 이동' : '에 연결'}</option>, ...(organizationScope?.type === 'project' ? [<option key={`link-${project.id}`} value={`link:${project.id}`}>{project.name}에도 연결</option>] : [])])}</select>}</div></span>
           <span className={`kind-text ${item.kind}`} role="cell">{KIND_SHORT[item.kind]}</span><span role="cell" className="cell-secondary">{item.domain || '미분류'}</span><span role="cell" className="cell-secondary">{item.owner || '미등록'}</span><span role="cell" className="connection-count">{relationCount.get(item.id) ?? 0}</span><span role="cell" className="cell-secondary">{item.updatedAt || '—'}</span>
           <span role="cell"><button className="graph-jump" onClick={(event) => showInGraph(item.id, event.currentTarget)} aria-label={`${item.title}을 그래프에서 보기`} title="그래프에서 보기"><Icon name="graph" /></button></span>
         </div>)}</div> : <div className="empty"><strong>조건에 맞는 자료가 없습니다.</strong><button onClick={() => { setQuery(''); setKind('all'); setDomain('all'); }}>필터 초기화</button></div>}
+        <div className="org-membership-tools"><span>{selectedItemIds.size}개 선택</span>{organizationScope?.type === 'project' ? <><select aria-label="선택한 자료를 프로젝트로 이동" defaultValue="" onChange={(event) => { const destination = event.target.value; if (!destination) return; applyOrganization([...selectedItemIds].map((itemId) => ({ type: 'item/move' as const, fromProjectId: organizationScope.id, toProjectId: destination, itemId }))); setSelectedItemIds(new Set()); event.currentTarget.value = ''; }}><option value="">선택한 자료 이동…</option>{organization.projects.filter((project) => project.id !== organizationScope.id).map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select><button disabled={!selectedItemIds.size} onClick={() => { applyOrganization([...selectedItemIds].map((itemId) => ({ type: 'item/unlink' as const, projectId: organizationScope.id, itemId }))); setSelectedItemIds(new Set()); }}>프로젝트에서 빼기</button></> : <select aria-label="선택한 자료를 프로젝트에 연결" defaultValue="" onChange={(event) => { const projectId = event.target.value; if (!projectId) return; applyOrganization([...selectedItemIds].map((itemId) => ({ type: 'item/link' as const, projectId, itemId }))); setSelectedItemIds(new Set()); event.currentTarget.value = ''; }}><option value="">선택한 자료 연결…</option>{organization.projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select>}</div>
         {pages > 1 && <div className="pagination"><button disabled={page === 1} onClick={() => setPage((value) => value - 1)}>이전</button><span>{(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, filtered.length)}</span><button disabled={page === pages} onClick={() => setPage((value) => value + 1)}>다음</button></div>}
-      </section></div>
+      </section></div></>}
     </main>
+    {pendingImport && <div className="org-dialog-backdrop"><div className="org-dialog" role="dialog" aria-modal="true" aria-label="내 정리 가져오기" onKeyDown={(event) => { if (event.key === 'Escape') { setPendingImport(null); requestAnimationFrame(() => importReturnRef.current?.focus()); } if (event.key === 'Tab') { const focusable = [...event.currentTarget.querySelectorAll<HTMLElement>('button:not([disabled])')]; const first = focusable[0]; const last = focusable[focusable.length - 1]; if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); } else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); } }}}><h2>내 정리 교체</h2><p>현재 이 브라우저의 폴더, 프로젝트, 자료 소속을 가져온 파일로 교체합니다.</p><div><button ref={importCloseRef} onClick={() => { setPendingImport(null); requestAnimationFrame(() => importReturnRef.current?.focus()); }}>취소</button><button onClick={() => { try { const raw = persistOrganization(localStorage, pendingImport, { expectedRaw: organizationRaw }); setOrganizationUndo(organization); setOrganization(pendingImport); setOrganizationRaw(raw); setCorruptOrganizationRaw(null); setOrganizationScope(null); setPage(1); setPendingImport(null); setOrganizationNotice('내 정리를 가져왔습니다.'); requestAnimationFrame(() => importReturnRef.current?.focus()); } catch (error) { setPendingImport(null); setOrganizationNotice(error instanceof Error ? error.message : '가져오기를 저장하지 못했습니다.'); } }}>교체하기</button></div></div></div>}
+    {organizationNotice && <div className="org-toast" role="status">{organizationNotice}{organizationUndo && <button onClick={() => { try { const raw = persistOrganization(localStorage, organizationUndo, { expectedRaw: organizationRaw }); setOrganization(organizationUndo); setOrganizationRaw(raw); setOrganizationUndo(null); setOrganizationNotice('변경을 되돌렸습니다.'); } catch { setOrganizationNotice('되돌리기를 저장하지 못했습니다.'); } }}>실행 취소</button>}<button onClick={() => setOrganizationNotice(null)} aria-label="알림 닫기">×</button></div>}
     {selected && <DetailPanel item={selected} relations={payload.relations} byId={byId} onClose={closeDetail} onNavigate={navigateRelation} />}
   </div>;
 }

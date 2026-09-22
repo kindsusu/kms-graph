@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
 import type { GraphCanvasProps, GraphStats, ItemKind, KnowledgeItem } from '../model';
-import { buildAdjacency, fitTransform, nearestNode, seedPositions, visibleNeighborhood, zoomAt, type Point, type ViewTransform } from './graphMath';
+import { buildAdjacency, fitTransform, isDirectionalRelation, labelRank, labelTier, nearestNode, nodeRadiusForDegree, relationDisplayLabel, seedPositions, visibleNeighborhood, zoomAt, type Point, type ViewTransform } from './graphMath';
 import './GraphCanvas.css';
 
 interface DrawNode extends Point { id: string; item: KnowledgeItem; degree: number }
@@ -19,6 +19,27 @@ interface Gesture {
 
 const COLORS: Record<ItemKind, string> = { document: '#aeb5bd', tool: '#42b7b1', ai_asset: '#927da7' };
 const CACHE_KEY = 'kms-graph-layout-v1';
+const EDGE_LABEL_LIMIT = 7;
+const EDGE_LABEL_MIN_ZOOM = .88;
+const MAX_EDGE_LABEL_CHARS = 18;
+
+function shortenLabel(value: string, limit = MAX_EDGE_LABEL_CHARS): string {
+  return value.length > limit ? `${value.slice(0, Math.max(1, limit - 1))}…` : value;
+}
+
+function drawArrow(ctx: CanvasRenderingContext2D, source: Point, target: Point, fromRadius: number, toRadius: number, scale: number): void {
+  const dx = target.x - source.x; const dy = target.y - source.y; const distance = Math.hypot(dx, dy);
+  if (distance < fromRadius + toRadius + 8 / scale) return;
+  const ux = dx / distance; const uy = dy / distance;
+  const tipX = target.x - ux * (toRadius + 2.5 / scale); const tipY = target.y - uy * (toRadius + 2.5 / scale);
+  const length = 6.5 / scale; const wing = 3.2 / scale;
+  ctx.beginPath(); ctx.moveTo(tipX, tipY);
+  ctx.lineTo(tipX - ux * length - uy * wing, tipY - uy * length + ux * wing);
+  ctx.lineTo(tipX - ux * length + uy * wing, tipY - uy * length - ux * wing);
+  ctx.closePath(); ctx.fill();
+}
+
+function edgeMidpoint(a: Point, b: Point): Point { return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }; }
 
 function loadCache(): Map<string, Point> {
   try {
@@ -63,6 +84,10 @@ export default function GraphCanvas({
   const initialFitRef = useRef(false);
   const finalFitRef = useRef(false);
   const userInteractedRef = useRef(false);
+  // Unlike the initial fit, a jump can safely recenter after layout only if
+  // the user has not taken control since that jump was requested.
+  const interactionEpochRef = useRef(0);
+  const focusInteractionEpochRef = useRef(0);
   const statsRef = useRef<GraphStats | null>(null);
   const [layoutState, setLayoutState] = useState(() => ({ signature: graphSignature(items, relations), running: items.length > 0 }));
   const [layoutError, setLayoutError] = useState<string | null>(null);
@@ -138,7 +163,13 @@ export default function GraphCanvas({
         setLayoutState({ signature, running: false });
         stablePositionsRef.current = new Map(positionsRef.current);
         saveCache(positionsRef.current);
-        if (!finalFitRef.current && !userInteractedRef.current) {
+        const focusId = focusTargetRef.current;
+        const canFinishFocus = focusId && focusInteractionEpochRef.current === interactionEpochRef.current;
+        const focused = focusId ? positionsRef.current.get(focusId) : undefined;
+        if (canFinishFocus && focused) {
+          const { width, height } = sizeRef.current; const k = Math.max(1.15, transformRef.current.k);
+          animateTransformRef.current({ x: width / 2 - focused.x * k, y: height / 2 - focused.y * k, k });
+        } else if (!finalFitRef.current && !userInteractedRef.current) {
           finalFitRef.current = true;
           animateTransformRef.current(fitTransform([...positionsRef.current.values()], sizeRef.current.width, sizeRef.current.height));
         }
@@ -208,7 +239,7 @@ export default function GraphCanvas({
       const rect = canvas.getBoundingClientRect();
       const point = { x: event.clientX - rect.left, y: event.clientY - rect.top };
       if (animationRef.current !== null) { cancelAnimationFrame(animationRef.current); animationRef.current = null; }
-      userInteractedRef.current = true;
+      userInteractedRef.current = true; interactionEpochRef.current += 1;
       transformRef.current = zoomAt(transformRef.current, point, transformRef.current.k * Math.exp(-event.deltaY * .0015));
       requestDraw();
     };
@@ -241,9 +272,13 @@ export default function GraphCanvas({
     const graphText = color('--graph-text', '#d8dde2');
     const graphSelected = color('--graph-selected', '#ffffff');
     const graphEdge = color('--graph-edge', 'rgba(135, 148, 160, .24)');
+    const graphLabelBackground = color('--graph-label-bg', color('--graph-bg', '#111418'));
     ctx.save(); ctx.translate(t.x, t.y); ctx.scale(t.k, t.k);
     const focusId = hoveredId ?? selectedId;
     const neighbors = focusId ? adjacency.get(focusId) ?? new Set<string>() : new Set<string>();
+    const activeEdges = focusId
+      ? drawEdges.filter((edge) => edge.source === focusId || edge.target === focusId)
+      : [];
     for (const edge of drawEdges) {
       const a = positionsRef.current.get(edge.source); const b = positionsRef.current.get(edge.target);
       if (!a || !b) continue;
@@ -251,31 +286,57 @@ export default function GraphCanvas({
       ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y);
       ctx.strokeStyle = related ? color('--graph-edge-active', 'rgba(180, 216, 220, .72)') : focusId ? color('--graph-edge-muted', 'rgba(135, 148, 160, .10)') : graphEdge;
       ctx.lineWidth = (related ? 1.15 : .65) / t.k; ctx.stroke();
+      if (related && isDirectionalRelation(edge.type)) {
+        const sourceDegree = adjacency.get(edge.source)?.size ?? 0;
+        const targetDegree = adjacency.get(edge.target)?.size ?? 0;
+        ctx.fillStyle = color('--graph-edge-active', 'rgba(180, 216, 220, .72)');
+        drawArrow(ctx, a, b, nodeRadiusForDegree(sourceDegree) / Math.sqrt(t.k), nodeRadiusForDegree(targetDegree) / Math.sqrt(t.k), t.k);
+      }
     }
     for (const node of drawNodes) {
       const active = node.id === focusId; const related = active || neighbors.has(node.id);
-      const radius = 3.25 + Math.min(1.25, Math.sqrt(node.degree) * .28);
-      ctx.beginPath(); ctx.arc(node.x, node.y, radius / Math.sqrt(t.k), 0, Math.PI * 2);
+      const radius = nodeRadiusForDegree(node.degree) / Math.sqrt(t.k);
+      ctx.beginPath(); ctx.arc(node.x, node.y, radius, 0, Math.PI * 2);
       ctx.globalAlpha = focusId && !related ? .28 : 1;
       ctx.fillStyle = nodeColors[node.item.kind]; ctx.fill();
       if (active || node.id === selectedId) { ctx.strokeStyle = graphSelected; ctx.lineWidth = 1.35 / t.k; ctx.stroke(); }
     }
     ctx.globalAlpha = 1;
-    const ranked = [...drawNodes].sort((a, b) => (b.id === selectedId ? 1e6 : b.degree) - (a.id === selectedId ? 1e6 : a.degree));
+    const ranked = [...drawNodes].sort((a, b) => labelRank(b.id, b.degree, selectedId, hoveredId, adjacency) - labelRank(a.id, a.degree, selectedId, hoveredId, adjacency));
     const maxLabels = t.k < .45 ? 5 : t.k < .8 ? 12 : t.k < 1.35 ? 28 : 70;
     const boxes: Array<{ l: number; r: number; t: number; b: number }> = [];
     ctx.font = `${11 / t.k}px system-ui, sans-serif`; ctx.textBaseline = 'middle';
     let labels = 0;
     for (const node of ranked) {
-      if (labels >= maxLabels && node.id !== selectedId && node.id !== hoveredId) continue;
+      const tier = labelTier(node.id, selectedId, hoveredId, adjacency);
+      if (labels >= maxLabels && tier !== 'focus') continue;
       const sx = node.x * t.k + t.x; const sy = node.y * t.k + t.y;
       if (sx < -20 || sy < -20 || sx > width + 20 || sy > height + 20) continue;
-      const text = node.item.title; const w = ctx.measureText(text).width * t.k;
+      const text = shortenLabel(node.item.title, 30); const w = ctx.measureText(text).width * t.k;
       const box = { l: sx + 8, r: sx + 8 + w, t: sy - 7, b: sy + 7 };
-      if (node.id !== selectedId && node.id !== hoveredId && boxes.some((b) => box.l < b.r && box.r > b.l && box.t < b.b && box.b > b.t)) continue;
+      if (tier !== 'focus' && boxes.some((b) => box.l < b.r && box.r > b.l && box.t < b.b && box.b > b.t)) continue;
       boxes.push(box); labels += 1;
       ctx.globalAlpha = focusId && node.id !== focusId && !neighbors.has(node.id) ? .26 : .88;
       ctx.fillStyle = node.id === selectedId ? graphSelected : graphText; ctx.fillText(text, node.x + 8 / t.k, node.y);
+    }
+    if (focusId && t.k >= EDGE_LABEL_MIN_ZOOM) {
+      const labeledEdges = activeEdges
+        .filter((edge) => isDirectionalRelation(edge.type))
+        .sort((a, b) => Number(Boolean(b.label.trim())) - Number(Boolean(a.label.trim())) || a.id.localeCompare(b.id))
+        .slice(0, EDGE_LABEL_LIMIT);
+      ctx.font = `${10 / t.k}px system-ui, sans-serif`; ctx.textBaseline = 'middle';
+      for (const edge of labeledEdges) {
+        const a = positionsRef.current.get(edge.source); const b = positionsRef.current.get(edge.target);
+        if (!a || !b) continue;
+        const center = edgeMidpoint(a, b); const sx = center.x * t.k + t.x; const sy = center.y * t.k + t.y;
+        const text = shortenLabel(relationDisplayLabel(edge)); const measured = ctx.measureText(text).width * t.k;
+        const box = { l: sx - measured / 2 - 4, r: sx + measured / 2 + 4, t: sy - 8, b: sy + 8 };
+        if (box.r < 0 || box.l > width || box.b < 0 || box.t > height || boxes.some((existing) => box.l < existing.r && box.r > existing.l && box.t < existing.b && box.b > existing.t)) continue;
+        boxes.push(box);
+        ctx.globalAlpha = .96; ctx.fillStyle = graphLabelBackground;
+        ctx.fillRect(center.x - (measured / t.k) / 2 - 4 / t.k, center.y - 7 / t.k, measured / t.k + 8 / t.k, 14 / t.k);
+        ctx.fillStyle = color('--graph-edge-label', graphText); ctx.fillText(text, center.x - (measured / t.k) / 2, center.y);
+      }
     }
     ctx.restore(); ctx.globalAlpha = 1;
   }, [drawNodes, drawEdges, adjacency, selectedId, hoveredId, positionVersion]);
@@ -295,15 +356,16 @@ export default function GraphCanvas({
       transformRef.current = { x: start.x + (target.x - start.x) * e, y: start.y + (target.y - start.y) * e, k: start.k + (target.k - start.k) * e };
       requestDraw();
       if (p < 1) animationRef.current = requestAnimationFrame(step);
-      else { animationRef.current = null; focusTargetRef.current = null; }
+      else animationRef.current = null;
     };
     animationRef.current = requestAnimationFrame(step);
   }, [requestDraw]);
   animateTransformRef.current = animateTransform;
 
   useEffect(() => {
-    if (!focusRequest) return;
+    if (!focusRequest) { focusTargetRef.current = null; return; }
     focusTargetRef.current = focusRequest.id;
+    focusInteractionEpochRef.current = interactionEpochRef.current;
     const point = positionsRef.current.get(focusRequest.id); if (!point) return;
     const { width, height } = sizeRef.current; const k = Math.max(1.15, transformRef.current.k);
     animateTransform({ x: width / 2 - point.x * k, y: height / 2 - point.y * k, k });
@@ -328,7 +390,7 @@ export default function GraphCanvas({
   const hitAt = (screen: Point) => nearestNode(drawNodes, worldPoint(screen), transformRef.current.k);
 
   const onPointerDown = (event: PointerEvent<HTMLCanvasElement>) => {
-    userInteractedRef.current = true;
+    userInteractedRef.current = true; interactionEpochRef.current += 1;
     if (animationRef.current !== null) { cancelAnimationFrame(animationRef.current); animationRef.current = null; }
     event.currentTarget.focus(); event.currentTarget.setPointerCapture(event.pointerId);
     const point = localPoint(event); pointersRef.current.set(event.pointerId, point);
@@ -381,7 +443,7 @@ export default function GraphCanvas({
   };
   const onKeyDown = (event: KeyboardEvent<HTMLCanvasElement>) => {
     if (isEditableTarget(event.target)) return;
-    userInteractedRef.current = true;
+    userInteractedRef.current = true; interactionEpochRef.current += 1;
     const t = transformRef.current; const { width, height } = sizeRef.current;
     if (event.key === '+' || event.key === '=') transformRef.current = zoomAt(t, { x: width / 2, y: height / 2 }, t.k * 1.2);
     else if (event.key === '-' || event.key === '_') transformRef.current = zoomAt(t, { x: width / 2, y: height / 2 }, t.k / 1.2);

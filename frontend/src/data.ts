@@ -2,6 +2,7 @@ import type { ItemKind, KnowledgeItem, KnowledgePayload, KnowledgeRelation, Rela
 
 const ITEM_KINDS = new Set<ItemKind>(['document', 'tool', 'ai_asset']);
 const RELATION_TYPES = new Set<RelationType>(['references', 'based_on', 'explains', 'uses_with', 'related']);
+const SYMMETRIC_RELATION_TYPES = new Set<RelationType>(['uses_with', 'related']);
 const HEALTH_VALUES = new Set(['ok', 'unchecked', 'unreachable', 'auth_required']);
 
 export class PayloadError extends Error {
@@ -98,7 +99,10 @@ export function parsePayload(value: unknown): KnowledgePayload {
     relationIds.add(relation.id);
     if (!ids.has(relation.source) || !ids.has(relation.target)) throw new PayloadError(`관계 ${relation.id}이(가) 없는 항목을 참조합니다.`);
     if (relation.source === relation.target) throw new PayloadError(`관계 ${relation.id}은(는) 자기 자신을 연결합니다.`);
-    const tuple = `${relation.source}\u0000${relation.target}\u0000${relation.type}`;
+    const [first, second] = SYMMETRIC_RELATION_TYPES.has(relation.type)
+      ? [relation.source, relation.target].sort()
+      : [relation.source, relation.target];
+    const tuple = JSON.stringify([first, second, relation.type]);
     if (relationTuples.has(tuple)) throw new PayloadError(`중복 관계가 있습니다: ${relation.id}`);
     relationTuples.add(tuple);
   }

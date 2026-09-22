@@ -6,6 +6,7 @@ import urllib.parse
 
 KINDS = {"document", "tool", "ai_asset"}
 RELATION_TYPES = {"references", "based_on", "explains", "uses_with", "related"}
+SYMMETRIC_RELATION_TYPES = {"uses_with", "related"}
 HEALTH_VALUES = {"ok", "unchecked", "unreachable", "auth_required"}
 
 
@@ -114,7 +115,10 @@ def validate_payload(payload):
             raise ValueError("self-loop relation: %s" % rel_id)
         if raw.get("type") not in RELATION_TYPES:
             raise ValueError("unknown relation type: %r" % raw.get("type"))
-        pair = (source, target, raw["type"])
+        # Context relationships have no direction. Store one canonical endpoint pair so
+        # A -> B and B -> A cannot make the same relationship appear twice.
+        endpoints = tuple(sorted((source, target))) if raw["type"] in SYMMETRIC_RELATION_TYPES else (source, target)
+        pair = (*endpoints, raw["type"])
         if pair in pairs:
             raise ValueError("duplicate relation: %s" % (pair,))
         relation_ids.add(rel_id); pairs.add(pair)

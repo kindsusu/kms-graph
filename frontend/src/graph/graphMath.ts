@@ -4,6 +4,8 @@ export interface Point { x: number; y: number }
 export interface ViewTransform { x: number; y: number; k: number }
 export interface PositionedNode extends Point { id: string }
 
+export type LabelTier = 'focus' | 'neighbor' | 'other';
+
 export const MIN_ZOOM = 0.18;
 export const MAX_ZOOM = 5;
 
@@ -70,6 +72,54 @@ export function buildAdjacency(items: readonly KnowledgeItem[], relations: reado
     adjacency.get(relation.target)!.add(relation.source);
   }
   return adjacency;
+}
+
+/**
+ * A compact visual encoding for connection breadth. `degree` must come from
+ * unique neighbours rather than raw edge count so parallel typed relations do
+ * not make a node look more important than its actual reach.
+ */
+export function nodeRadiusForDegree(degree: number): number {
+  const safeDegree = Math.max(0, Number.isFinite(degree) ? degree : 0);
+  return 3.2 + Math.min(2.3, Math.log2(safeDegree + 1) * .5);
+}
+
+export function labelTier(
+  id: string,
+  selectedId: string | null,
+  hoveredId: string | null,
+  adjacency: ReadonlyMap<string, ReadonlySet<string>>,
+): LabelTier {
+  if (id === selectedId || id === hoveredId) return 'focus';
+  // Hover is the active inspection target. Keep the selected node's own label
+  // visible, but do not mix two separate neighborhoods while inspecting hover.
+  const focusId = hoveredId ?? selectedId;
+  if (focusId && adjacency.get(focusId)?.has(id)) return 'neighbor';
+  return 'other';
+}
+
+export function labelRank(
+  id: string,
+  degree: number,
+  selectedId: string | null,
+  hoveredId: string | null,
+  adjacency: ReadonlyMap<string, ReadonlySet<string>>,
+): number {
+  const tier = labelTier(id, selectedId, hoveredId, adjacency);
+  const tierWeight = tier === 'focus' ? 2_000_000 : tier === 'neighbor' ? 1_000_000 : 0;
+  return tierWeight + degree;
+}
+
+export function isDirectionalRelation(type: KnowledgeRelation['type']): boolean {
+  return type !== 'related' && type !== 'uses_with';
+}
+
+export function relationFallbackLabel(type: KnowledgeRelation['type']): string {
+  return ({ references: '참조함', based_on: '근거로 함', explains: '설명함', uses_with: '함께 사용', related: '관련됨' } as const)[type];
+}
+
+export function relationDisplayLabel(relation: KnowledgeRelation): string {
+  return relation.label.trim() || relationFallbackLabel(relation.type);
 }
 
 export function visibleNeighborhood(

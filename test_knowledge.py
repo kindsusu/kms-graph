@@ -24,10 +24,19 @@ def invalid(change):
 invalid(lambda p: p["items"].append(dict(p["items"][0])))
 invalid(lambda p: p["relations"].append({"id":"x", "source":"missing", "target":"doc-manual", "type":"references", "label":""}))
 invalid(lambda p: p["relations"].append({"id":"x", "source":"doc-manual", "target":"doc-manual", "type":"references", "label":""}))
+invalid(lambda p: p["relations"].extend([
+    {"id":"symmetric-1", "source":"doc-manual", "target":"doc-annual-policy", "type":"related", "label":""},
+    {"id":"symmetric-2", "source":"doc-annual-policy", "target":"doc-manual", "type":"related", "label":""},
+]))
 invalid(lambda p: p["items"][0].update(prompt="leak"))
 invalid(lambda p: p["items"][3].update(url="https://u:p@example.com"))
 invalid(lambda p: p["items"][3].update(health="maybe"))
 assert knowledge.stable_id("tool", "https://x") == knowledge.stable_id("tool", "https://x")
+
+# Directed relations retain both directions because each direction has a different meaning.
+directed = json.loads(json.dumps(sample))
+directed["relations"].append({"id":"directed-reverse", "source":"doc-annual-policy", "target":"doc-manual", "type":"references", "label":"참조"})
+assert len(knowledge.validate_payload(directed)["relations"]) == 4
 
 # Canonical whitespace IDs still connect, and non-contract values never reach output.
 trimmed = json.loads(json.dumps(sample))

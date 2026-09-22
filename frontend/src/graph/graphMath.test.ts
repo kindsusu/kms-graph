@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { KnowledgeItem, KnowledgeRelation } from '../model';
-import { fitTransform, nearestNode, seedPositions, visibleNeighborhood, zoomAt } from './graphMath';
+import { fitTransform, isDirectionalRelation, labelTier, nearestNode, nodeRadiusForDegree, relationDisplayLabel, seedPositions, visibleNeighborhood, zoomAt } from './graphMath';
 import { createLayoutSimulation, suggestedTickCount, type LayoutLink, type LayoutNode } from './layoutSimulation';
 
 const item = (id: string): KnowledgeItem => ({ id, title: id, kind: 'document', subtype: '', description: '', owner: '', department: '', domain: '', tags: [] });
@@ -36,6 +36,33 @@ describe('graph filtering', () => {
     const allowed = new Set(['a', 'b', 'd']);
     expect([...visibleNeighborhood(items, relations, allowed, 'a', 2)].sort()).toEqual(['a', 'b']);
     expect([...visibleNeighborhood(items, relations, allowed, 'a', 0)].sort()).toEqual(['a', 'b', 'd']);
+  });
+});
+
+describe('graph visibility encoding', () => {
+  const adjacency = new Map([
+    ['selected', new Set(['neighbor'])], ['neighbor', new Set(['selected'])],
+    ['other', new Set(['hovered'])], ['hovered', new Set(['other'])],
+  ]);
+
+  it('keeps focus labels ahead of direct neighbors and other nodes', () => {
+    expect(labelTier('selected', 'selected', 'hovered', adjacency)).toBe('focus');
+    expect(labelTier('hovered', 'selected', 'hovered', adjacency)).toBe('focus');
+    expect(labelTier('other', 'selected', 'hovered', adjacency)).toBe('neighbor');
+    expect(labelTier('neighbor', 'selected', 'hovered', adjacency)).toBe('other');
+  });
+
+  it('uses a bounded, monotonic size for unique neighbor counts', () => {
+    const sizes = [0, 1, 2, 8, 80, 800].map(nodeRadiusForDegree);
+    expect(sizes.every((size, index) => index === 0 || size >= sizes[index - 1])).toBe(true);
+    expect(nodeRadiusForDegree(800)).toBeLessThanOrEqual(5.5);
+  });
+
+  it('keeps arrows for directional relations and supplies human labels', () => {
+    expect(isDirectionalRelation('references')).toBe(true);
+    expect(isDirectionalRelation('related')).toBe(false);
+    expect(isDirectionalRelation('uses_with')).toBe(false);
+    expect(relationDisplayLabel({ id: 'r', source: 'a', target: 'b', type: 'based_on', label: '  ' })).toBe('근거로 함');
   });
 });
 
